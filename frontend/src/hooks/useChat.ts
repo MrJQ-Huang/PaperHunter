@@ -63,8 +63,7 @@ export function useChat(
     }
   }, [taskId, currentTaskId, syncMessages])
 
-  // 核心发送逻辑：只负责 API 调用，不负责添加用户消息到 store
-  // 调用方（ChatWindow）需要自己先 addMessage
+  // 核心发送逻辑
   const sendMessage = useCallback(
     async (content: string) => {
       if (!content.trim()) return
@@ -85,7 +84,7 @@ export function useChat(
             tid = task.id
             setCurrentTaskId(task.id)
             onTaskCreated?.(task)
-            // 先把用户消息加入 store，再同步后端消息（syncMessages 会保留它）
+            // ★ 关键：任务创建后、API 调用前，立即把用户消息加入 store
             addMessage(task.id, {
               type: 'chat',
               from: 'user',
@@ -100,8 +99,15 @@ export function useChat(
         return
       }
 
-      // 有任务时：发送到后端，获取回复
+      // ★ 有任务时：先把用户消息加入 store（气泡立刻出现），再调 API
+      addMessage(tid, {
+        type: 'chat',
+        from: 'user',
+        content: content.trim(),
+        timestamp: new Date().toISOString(),
+      })
       setIsLoading(true)
+
       try {
         await fetch(`/api/messages/${tid}`, {
           method: 'POST',

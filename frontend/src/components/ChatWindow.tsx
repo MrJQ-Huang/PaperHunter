@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef } from 'react'
 import { useChat } from '../hooks/useChat'
 import { usePaperStore, Task } from '../stores/paperStore'
 import { useAgentStore } from '../stores/agentStore'
@@ -16,16 +16,12 @@ interface Props {
 export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskStatus, inputRef: extRef }: Props) {
   const {
     messages, input, setInput, sendMessage, handleSuggestion,
-    confirmSearch, terminateTask, resetTask, isLoading, addMessage,
+    confirmSearch, terminateTask, resetTask, isLoading,
   } = useChat(taskId, onTaskCreated, onTaskUpdated)
   const bottomRef = useRef<HTMLDivElement>(null)
   const localRef = useRef<HTMLInputElement>(null)
   const ref = extRef || localRef
   const agents = useAgentStore((s) => s.agents)
-  const tidRef = useRef<string | null>(taskId)
-
-  // 跟踪最新的 taskId
-  useEffect(() => { tidRef.current = taskId }, [taskId])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -41,27 +37,12 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
     return () => window.removeEventListener('chat-send', handler)
   }, [sendMessage, setInput])
 
-  // 核心：先显示用户气泡，再发请求
-  const doSend = useCallback((text: string) => {
+  // 发送消息：sendMessage 内部负责 addMessage（同步执行，气泡立刻出现）
+  const doSend = (text: string) => {
     if (!text.trim() || isLoading) return
-
-    const tid = tidRef.current
-
-    // 立即把用户消息加到 store → 触发 re-render → 气泡出现
-    if (tid) {
-      addMessage(tid, {
-        type: 'chat',
-        from: 'user',
-        content: text.trim(),
-        timestamp: new Date().toISOString(),
-      })
-    }
-
     setInput('')
-
-    // 然后异步调 API（sendMessage 内部会创建任务 + 获取回复）
     sendMessage(text)
-  }, [isLoading, addMessage, setInput, sendMessage])
+  }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey && !isLoading) {
