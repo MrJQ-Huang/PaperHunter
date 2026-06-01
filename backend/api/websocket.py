@@ -57,3 +57,11 @@ async def broadcast_agent_status(task_id: str, agent: str, status: str, message:
         "message": message,
         "progress": progress,
     })
+
+
+async def broadcast_agent_log(task_id: str, agent: str, log_line: str):
+    await broadcast_to_task(task_id, {
+        "type": "agent_log",
+        "agent": agent,
+        "content": log_line,
+    })

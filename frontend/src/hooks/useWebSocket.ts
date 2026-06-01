@@ -8,6 +8,8 @@ export function useWebSocket(taskId: string | null) {
   const reconnectAttempts = useRef(0)
   const maxReconnectAttempts = 10
   const updateAgent = useAgentStore((s) => s.updateAgent)
+  const appendAgentLog = useAgentStore((s) => s.appendAgentLog)
+  const setAgentCollapsed = useAgentStore((s) => s.setAgentCollapsed)
   const addMessage = usePaperStore((s) => s.addMessage)
 
   const connect = useCallback(() => {
@@ -21,7 +23,6 @@ export function useWebSocket(taskId: string | null) {
 
     ws.onopen = () => {
       reconnectAttempts.current = 0
-      // 启动心跳
       startHeartbeat(ws)
     }
 
@@ -38,6 +39,20 @@ export function useWebSocket(taskId: string | null) {
             message: data.message || '',
             progress: data.progress,
           })
+          // 状态变更时追加日志
+          appendAgentLog(data.agent, `[状态] ${data.message || data.status}`)
+          // 完成或出错时自动折叠
+          if (data.status === 'done' || data.status === 'error') {
+            setAgentCollapsed(data.agent, true)
+          }
+          // 开始工作时自动展开
+          if (data.status === 'working') {
+            setAgentCollapsed(data.agent, false)
+          }
+        }
+
+        if (data.type === 'agent_log' && data.agent) {
+          appendAgentLog(data.agent, data.content || '')
         }
 
         if (data.type === 'chat' && taskId && data.from !== 'user') {
@@ -49,7 +64,6 @@ export function useWebSocket(taskId: string | null) {
     }
 
     ws.onclose = () => {
-      // 自动重连（指数退避）
       if (reconnectAttempts.current < maxReconnectAttempts) {
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000)
         reconnectTimer.current = window.setTimeout(() => {
@@ -62,7 +76,7 @@ export function useWebSocket(taskId: string | null) {
     ws.onerror = () => {
       ws.close()
     }
-  }, [taskId, updateAgent, addMessage])
+  }, [taskId, updateAgent, addMessage, appendAgentLog, setAgentCollapsed])
 
   const startHeartbeat = (ws: WebSocket) => {
     const interval = setInterval(() => {

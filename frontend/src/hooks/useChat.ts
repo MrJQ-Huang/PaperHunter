@@ -64,6 +64,7 @@ export function useChat(
 
       // 没有任务时，先创建任务（不自动执行）
       if (!tid) {
+        setInput('')
         setIsLoading(true)
         try {
           const resp = await fetch('/api/tasks', {
@@ -76,16 +77,22 @@ export function useChat(
             tid = task.id
             setCurrentTaskId(task.id)
             onTaskCreated?.(task)
+            // 立即将用户消息添加到 store（不等 syncMessages）
+            addMessage(task.id, {
+              type: 'chat',
+              from: 'user',
+              content: content.trim(),
+              timestamp: new Date().toISOString(),
+            })
             await syncMessages(task.id)
           }
         } catch {} finally {
           setIsLoading(false)
         }
-        setInput('')
         return
       }
 
-      // 有任务时正常发送
+      // 有任务时正常发送 — 立即显示用户消息
       addMessage(tid, {
         type: 'chat',
         from: 'user',

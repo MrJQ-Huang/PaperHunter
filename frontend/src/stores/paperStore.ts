@@ -37,7 +37,7 @@ export interface Task {
 
 export interface ChatMessage {
   id?: string
-  type: 'chat' | 'agent_status' | 'pong'
+  type: 'chat' | 'agent_status' | 'agent_log' | 'pong'
   from?: 'user' | 'agent'
   content?: string
   timestamp?: string

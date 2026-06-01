@@ -30,7 +30,7 @@ from ..database import (
     insert_task, update_task, insert_papers, insert_message,
     get_paper, update_paper_download, update_task_download_stats,
 )
-from ..api.websocket import broadcast_agent_status
+from ..api.websocket import broadcast_agent_status, broadcast_agent_log
 from ..config import settings
 
 
@@ -86,9 +86,11 @@ class PaperCrew:
             if await self._check_terminated():
                 return
             await self._notify("filter", "working", "正在智能筛选论文...")
+            await self._log("filter", "开始智能筛选...")
             filtered_papers = await self._filter_phase(papers)
             self.task.papers_after_filter = len(filtered_papers)
             await update_task(self.task)
+            await self._log("filter", f"✓ 筛选完成，推荐 {len(filtered_papers)} 篇论文")
             await self._notify("filter", "done", f"筛选完成，推荐 {len(filtered_papers)} 篇论文", 100)
 
             # 向用户展示筛选结果
@@ -101,6 +103,7 @@ class PaperCrew:
             if await self._check_terminated():
                 return
             await self._notify("download", "working", "正在下载论文 PDF...")
+            await self._log("download", f"开始下载 {len(filtered_papers)} 篇论文 PDF...")
             download_results = await self._download_phase(filtered_papers)
             self.task.papers_downloaded = download_results["success"]
             self.task.papers_failed = download_results["failed"]
@@ -136,12 +139,15 @@ class PaperCrew:
 
         # 翻译中文查询为英文检索词
         await self._notify("search", "working", "正在翻译检索词...")
+        await self._log("search", "正在翻译检索词...")
         translated = await translate_query(original_query)
+        await self._log("search", f"✓ 检索词已翻译: {translated}")
         await self._send_chat(f"已将检索词翻译为：{translated}")
 
         # 扩展为多个查询变体
         queries = await expand_query(translated)
         if len(queries) > 1:
+            await self._log("search", f"✓ 扩展为 {len(queries)} 组检索词")
             await self._send_chat(f"扩展了 {len(queries)} 组检索词以提高覆盖率")
 
         # 用所有查询变体并行搜索
@@ -168,15 +174,18 @@ class PaperCrew:
         for i, result in enumerate(results):
             source_name, query_used = search_meta[i]
             if isinstance(result, Exception):
+                await self._log("search", f"✗ {source_name.value} 搜索失败: {str(result)}")
                 await self._send_chat(f"⚠️ {source_name.value} 搜索失败: {str(result)}")
             else:
                 all_papers.extend(result)
-                await self._send_chat(f"✓ {source_name.value}: 找到 {len(result)} 篇论文")
+                await self._log("search", f"✓ {source_name.value}: 找到 {len(result)} 篇论文")
 
+        await self._log("search", f"共收集 {len(all_papers)} 篇论文，正在去重...")
         await self._send_chat(f"共收集 {len(all_papers)} 篇论文，正在去重...")
 
         # 去重
         deduplicated = deduplicate(all_papers)
+        await self._log("search", f"✓ 去重完成，剩余 {len(deduplicated)} 篇论文")
         return deduplicated
 
     async def _filter_phase(self, papers: list[Paper]) -> list[Paper]:
@@ -297,6 +306,9 @@ class PaperCrew:
                     self.task.papers_failed = failed
                     await update_task_download_stats(self.task.id, success, failed)
                     done = success + failed
+                    status_icon = "✓" if local_path else "✗"
+                    paper_title = paper.title[:40] + "..." if len(paper.title) > 40 else paper.title
+                    await self._log("download", f"{status_icon} [{done}/{total}] {paper_title}")
                     await self._notify(
                         "download", "working",
                         f"下载进度: {done}/{total} (成功 {success}, 失败 {failed})",
@@ -314,6 +326,13 @@ class PaperCrew:
             await broadcast_agent_status(self.task.id, agent, status, message, progress)
         except Exception:
             pass  # WebSocket 可能未连接
+
+    async def _log(self, agent: str, log_line: str):
+        """发送 Agent 日志行（显示在终端风格气泡中）"""
+        try:
+            await broadcast_agent_log(self.task.id, agent, log_line)
+        except Exception:
+            pass
 
     async def _send_chat(self, content: str, suggestions: list[str] | None = None):
         """发送聊天消息"""

@@ -9,7 +9,13 @@ export interface AgentStatus {
 
 interface AgentState {
   agents: Record<string, AgentStatus>
+  agentLogs: Record<string, string[]>
+  agentCollapsed: Record<string, boolean>
   updateAgent: (update: AgentStatus) => void
+  appendAgentLog: (agent: string, logLine: string) => void
+  toggleAgentCollapse: (agent: string) => void
+  setAgentCollapsed: (agent: string, collapsed: boolean) => void
+  clearAgentLogs: () => void
   resetAgents: () => void
 }
 
@@ -22,6 +28,8 @@ const defaultAgents: Record<string, AgentStatus> = {
 
 export const useAgentStore = create<AgentState>((set) => ({
   agents: { ...defaultAgents },
+  agentLogs: {},
+  agentCollapsed: {},
   updateAgent: (update) =>
     set((state) => ({
       agents: {
@@ -29,5 +37,27 @@ export const useAgentStore = create<AgentState>((set) => ({
         [update.agent]: update,
       },
     })),
-  resetAgents: () => set({ agents: { ...defaultAgents } }),
+  appendAgentLog: (agent, logLine) =>
+    set((state) => ({
+      agentLogs: {
+        ...state.agentLogs,
+        [agent]: [...(state.agentLogs[agent] || []), logLine],
+      },
+    })),
+  toggleAgentCollapse: (agent) =>
+    set((state) => ({
+      agentCollapsed: {
+        ...state.agentCollapsed,
+        [agent]: !state.agentCollapsed[agent],
+      },
+    })),
+  setAgentCollapsed: (agent, collapsed) =>
+    set((state) => ({
+      agentCollapsed: {
+        ...state.agentCollapsed,
+        [agent]: collapsed,
+      },
+    })),
+  clearAgentLogs: () => set({ agentLogs: {}, agentCollapsed: {} }),
+  resetAgents: () => set({ agents: { ...defaultAgents }, agentLogs: {}, agentCollapsed: {} }),
 }))
