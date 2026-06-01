@@ -16,14 +16,21 @@ export function useChat(
   const messages = activeTaskId ? (messagesByTask[activeTaskId] || []) : []
   const { sendMessage: wsSend } = useWebSocket(activeTaskId)
 
-  // 刷新后端消息到本地
+  // 刷新后端消息到本地（保留用户刚发的消息，避免被 clearMessages 清掉）
   const syncMessages = useCallback(async (tid: string) => {
     try {
       const resp = await fetch(`/api/messages/${tid}`)
       if (resp.ok) {
         const msgs = await resp.json()
+        // 保留本地已有的用户消息（刚发送、后端可能还没返回）
+        const existing = usePaperStore.getState().messagesByTask[tid] || []
+        const userMsgs = existing.filter((m) => m.from === 'user')
         usePaperStore.getState().clearMessages(tid)
+        // 先加后端消息
+        const addedKeys = new Set<string>()
         for (const m of msgs) {
+          const key = `${m.role}:${m.content}`
+          addedKeys.add(key)
           addMessage(tid, {
             type: 'chat',
             from: m.role === 'user' ? 'user' : 'agent',
@@ -31,6 +38,12 @@ export function useChat(
             timestamp: m.timestamp,
             suggestions: m.suggestions,
           })
+        }
+        // 再加回本地用户消息（如果后端没有返回）
+        for (const um of userMsgs) {
+          if (um.content && !addedKeys.has(`user:${um.content}`)) {
+            addMessage(tid, um)
+          }
         }
       }
     } catch {}
