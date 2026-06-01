@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 import { useChat } from '../hooks/useChat'
 import { usePaperStore, Task } from '../stores/paperStore'
 import { useAgentStore } from '../stores/agentStore'
@@ -16,12 +16,16 @@ interface Props {
 export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskStatus, inputRef: extRef }: Props) {
   const {
     messages, input, setInput, sendMessage, handleSuggestion,
-    confirmSearch, terminateTask, resetTask, isLoading,
+    confirmSearch, terminateTask, resetTask, isLoading, addMessage,
   } = useChat(taskId, onTaskCreated, onTaskUpdated)
   const bottomRef = useRef<HTMLDivElement>(null)
   const localRef = useRef<HTMLInputElement>(null)
   const ref = extRef || localRef
   const agents = useAgentStore((s) => s.agents)
+  const tidRef = useRef<string | null>(taskId)
+
+  // 跟踪最新的 taskId
+  useEffect(() => { tidRef.current = taskId }, [taskId])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -31,14 +35,39 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
   useEffect(() => {
     const handler = (e: Event) => {
       const topic = (e as CustomEvent).detail
-      if (topic) { setInput(topic); setTimeout(() => sendMessage(topic), 50) }
+      if (topic) { setInput(topic); setTimeout(() => doSend(topic), 50) }
     }
     window.addEventListener('chat-send', handler)
     return () => window.removeEventListener('chat-send', handler)
   }, [sendMessage, setInput])
 
+  // 核心：先显示用户气泡，再发请求
+  const doSend = useCallback((text: string) => {
+    if (!text.trim() || isLoading) return
+
+    const tid = tidRef.current
+
+    // 立即把用户消息加到 store → 触发 re-render → 气泡出现
+    if (tid) {
+      addMessage(tid, {
+        type: 'chat',
+        from: 'user',
+        content: text.trim(),
+        timestamp: new Date().toISOString(),
+      })
+    }
+
+    setInput('')
+
+    // 然后异步调 API（sendMessage 内部会创建任务 + 获取回复）
+    sendMessage(text)
+  }, [isLoading, addMessage, setInput, sendMessage])
+
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey && !isLoading) { e.preventDefault(); sendMessage(input) }
+    if (e.key === 'Enter' && !e.shiftKey && !isLoading) {
+      e.preventDefault()
+      doSend(input)
+    }
   }
 
   const showConfirm = taskId && taskStatus === 'pending'
@@ -59,7 +88,7 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
         )}
 
         {messages.map((msg, i) => (
-          <div key={msg.id || i} className={`flex ${msg.from === 'user' ? 'justify-end' : 'justify-start'} msg-enter`}>
+          <div key={msg.id || `local-${i}`} className={`flex ${msg.from === 'user' ? 'justify-end' : 'justify-start'} msg-enter`}>
             {msg.from === 'user' ? (
               <div className="max-w-[75%] bg-gradient-to-r from-violet-500 to-purple-500 text-white rounded-2xl rounded-br-md px-4 py-2.5 text-sm shadow-sm shadow-violet-200/40">
                 <p className="whitespace-pre-wrap">{msg.content}</p>
@@ -153,7 +182,7 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
             className="flex-1 bg-transparent py-2 text-sm text-gray-700 focus:outline-none placeholder-gray-300 disabled:text-gray-300"
           />
           <button
-            onClick={() => sendMessage(input)}
+            onClick={() => doSend(input)}
             disabled={!input.trim() || isLoading}
             className="p-2 bg-gradient-to-r from-violet-500 to-purple-500 text-white rounded-xl hover:from-violet-600 hover:to-purple-600 disabled:opacity-30 disabled:cursor-not-allowed transition-all shadow-sm shadow-violet-200/40 active:scale-90 shrink-0"
           >

@@ -16,17 +16,15 @@ export function useChat(
   const messages = activeTaskId ? (messagesByTask[activeTaskId] || []) : []
   const { sendMessage: wsSend } = useWebSocket(activeTaskId)
 
-  // 刷新后端消息到本地（保留用户刚发的消息，避免被 clearMessages 清掉）
+  // 刷新后端消息到本地（保留用户刚发的消息）
   const syncMessages = useCallback(async (tid: string) => {
     try {
       const resp = await fetch(`/api/messages/${tid}`)
       if (resp.ok) {
         const msgs = await resp.json()
-        // 保留本地已有的用户消息（刚发送、后端可能还没返回）
         const existing = usePaperStore.getState().messagesByTask[tid] || []
         const userMsgs = existing.filter((m) => m.from === 'user')
         usePaperStore.getState().clearMessages(tid)
-        // 先加后端消息
         const addedKeys = new Set<string>()
         for (const m of msgs) {
           const key = `${m.role}:${m.content}`
@@ -39,7 +37,6 @@ export function useChat(
             suggestions: m.suggestions,
           })
         }
-        // 再加回本地用户消息（如果后端没有返回）
         for (const um of userMsgs) {
           if (um.content && !addedKeys.has(`user:${um.content}`)) {
             addMessage(tid, um)
@@ -49,7 +46,6 @@ export function useChat(
     } catch {}
   }, [addMessage])
 
-  // 刷新任务状态
   const refreshTask = useCallback(async (tid: string) => {
     try {
       const resp = await fetch(`/api/tasks/${tid}`)
@@ -60,7 +56,6 @@ export function useChat(
     } catch {}
   }, [onTaskUpdated])
 
-  // 当 taskId 变化时同步消息
   useEffect(() => {
     if (taskId && taskId !== currentTaskId) {
       setCurrentTaskId(taskId)
@@ -68,16 +63,16 @@ export function useChat(
     }
   }, [taskId, currentTaskId, syncMessages])
 
-  // 发送消息
+  // 核心发送逻辑：只负责 API 调用，不负责添加用户消息到 store
+  // 调用方（ChatWindow）需要自己先 addMessage
   const sendMessage = useCallback(
     async (content: string) => {
       if (!content.trim()) return
 
       let tid = currentTaskId || taskId
 
-      // 没有任务时，先创建任务（不自动执行）
+      // 没有任务时，先创建任务
       if (!tid) {
-        setInput('')
         setIsLoading(true)
         try {
           const resp = await fetch('/api/tasks', {
@@ -90,13 +85,6 @@ export function useChat(
             tid = task.id
             setCurrentTaskId(task.id)
             onTaskCreated?.(task)
-            // 立即将用户消息添加到 store（不等 syncMessages）
-            addMessage(task.id, {
-              type: 'chat',
-              from: 'user',
-              content: content.trim(),
-              timestamp: new Date().toISOString(),
-            })
             await syncMessages(task.id)
           }
         } catch {} finally {
@@ -105,16 +93,8 @@ export function useChat(
         return
       }
 
-      // 有任务时正常发送 — 立即显示用户消息
-      addMessage(tid, {
-        type: 'chat',
-        from: 'user',
-        content: content.trim(),
-        timestamp: new Date().toISOString(),
-      })
-      setInput('')
+      // 有任务时：发送到后端，获取回复
       setIsLoading(true)
-
       try {
         await fetch(`/api/messages/${tid}`, {
           method: 'POST',
@@ -140,85 +120,49 @@ export function useChat(
     [currentTaskId, taskId, addMessage, wsSend, onTaskCreated, syncMessages]
   )
 
-  // 确认开始搜索
   const confirmSearch = useCallback(async () => {
     const tid = currentTaskId || taskId
     if (!tid) return
-
     addMessage(tid, {
-      type: 'chat',
-      from: 'user',
-      content: '确认，开始搜索！',
-      timestamp: new Date().toISOString(),
+      type: 'chat', from: 'user', content: '确认，开始搜索！', timestamp: new Date().toISOString(),
     })
-
     try {
       const resp = await fetch(`/api/tasks/${tid}/confirm`, { method: 'POST' })
-      if (resp.ok) {
-        await refreshTask(tid)
-      }
+      if (resp.ok) await refreshTask(tid)
     } catch {}
   }, [currentTaskId, taskId, addMessage, refreshTask])
 
-  // 终止任务
   const terminateTask = useCallback(async () => {
     const tid = currentTaskId || taskId
     if (!tid) return
-
     addMessage(tid, {
-      type: 'chat',
-      from: 'user',
-      content: '终止当前任务',
-      timestamp: new Date().toISOString(),
+      type: 'chat', from: 'user', content: '终止当前任务', timestamp: new Date().toISOString(),
     })
-
     try {
       const resp = await fetch(`/api/tasks/${tid}/terminate`, { method: 'POST' })
-      if (resp.ok) {
-        await refreshTask(tid)
-        await syncMessages(tid)
-      }
+      if (resp.ok) { await refreshTask(tid); await syncMessages(tid) }
     } catch {}
   }, [currentTaskId, taskId, addMessage, refreshTask, syncMessages])
 
-  // 重置任务
   const resetTask = useCallback(async () => {
     const tid = currentTaskId || taskId
     if (!tid) return
-
     addMessage(tid, {
-      type: 'chat',
-      from: 'user',
-      content: '重置任务',
-      timestamp: new Date().toISOString(),
+      type: 'chat', from: 'user', content: '重置任务', timestamp: new Date().toISOString(),
     })
-
     try {
       const resp = await fetch(`/api/tasks/${tid}/reset`, { method: 'POST' })
-      if (resp.ok) {
-        await refreshTask(tid)
-        await syncMessages(tid)
-      }
+      if (resp.ok) { await refreshTask(tid); await syncMessages(tid) }
     } catch {}
   }, [currentTaskId, taskId, addMessage, refreshTask, syncMessages])
 
   const handleSuggestion = useCallback(
-    (suggestion: string) => {
-      sendMessage(suggestion)
-    },
+    (suggestion: string) => { sendMessage(suggestion) },
     [sendMessage]
   )
 
   return {
-    messages,
-    input,
-    setInput,
-    sendMessage,
-    handleSuggestion,
-    confirmSearch,
-    terminateTask,
-    resetTask,
-    taskId: activeTaskId,
-    isLoading,
+    messages, input, setInput, sendMessage, handleSuggestion,
+    confirmSearch, terminateTask, resetTask, taskId: activeTaskId, isLoading, addMessage,
   }
 }
