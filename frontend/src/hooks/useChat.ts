@@ -85,6 +85,13 @@ export function useChat(
             tid = task.id
             setCurrentTaskId(task.id)
             onTaskCreated?.(task)
+            // 先把用户消息加入 store，再同步后端消息（syncMessages 会保留它）
+            addMessage(task.id, {
+              type: 'chat',
+              from: 'user',
+              content: content.trim(),
+              timestamp: new Date().toISOString(),
+            })
             await syncMessages(task.id)
           }
         } catch {} finally {
