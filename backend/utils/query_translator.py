@@ -49,14 +49,13 @@ async def generate_search_plan(query: str) -> dict:
 
     返回：
     {
-        "core_concepts": ["视觉语言动作模型", ...],   # 核心概念（必须包含）
-        "synonyms": ["visual-language-action", ...],    # 同义词/缩写展开
-        "sub_directions": ["robot manipulation", ...],  # 相关子方向
+        "core_concepts": ["vision language action", "VLA"],
+        "field_terms": ["embodied AI", "robot manipulation", "policy learning", ...],
         "queries": {
-            "arxiv": "all:VLA AND all:robot AND all:manipulation",
-            "semantic_scholar": "VLA robot manipulation policy learning",
-            "openalex": "VLA robot manipulation",
-            "crossref": "VLA robot manipulation",
+            "arxiv": "...",
+            "semantic_scholar": "...",
+            "openalex": "...",
+            "crossref": "..."
         }
     }
     """
@@ -74,8 +73,7 @@ async def generate_search_plan(query: str) -> dict:
 你必须返回纯 JSON，格式如下：
 {
   "core_concepts": ["核心概念1", "核心概念2"],
-  "synonyms": ["同义词1", "同义词2"],
-  "sub_directions": ["子方向1", "子方向2"],
+  "field_terms": ["领域术语1", "领域术语2", ...],
   "queries": {
     "arxiv": "arXiv格式的布尔查询",
     "semantic_scholar": "自然语言查询",
@@ -84,12 +82,17 @@ async def generate_search_plan(query: str) -> dict:
   }
 }
 
+字段说明：
+- core_concepts: 该领域最核心的 2-3 个概念词，论文中大概率会包含这些词（如 "vision language action"、"robot"）
+- field_terms: 该领域论文中自然会出现的术语，即使论文标题不含核心概念，摘要也会包含这些词
+  例如 VLA 领域的 field_terms: ["embodied AI", "robot manipulation", "policy learning", "end-to-end control", "foundation model", "imitation learning", "visual grounding"]
+  这些词不是核心概念的同义词，而是该领域论文必然会使用的术语
+
 规则：
-1. core_concepts 是最核心的概念词，搜索结果必须包含至少一个
-2. queries 中每个查询都必须包含 core_concepts 中的词
-3. arXiv 支持 AND/OR 布尔语法，其他用空格分隔关键词
-4. 不要生成过于宽泛的查询
-5. 只返回 JSON，不要其他内容""",
+1. core_concepts 中的词必须出现在每个 queries 中
+2. arXiv 支持 AND/OR 布尔语法，其他用空格分隔
+3. field_terms 要尽量全面（5-10 个），覆盖该领域的不同表述
+4. 只返回 JSON，不要其他内容""",
         "messages": [
             {"role": "user", "content": f"研究主题：{query}"}
         ],
@@ -138,8 +141,7 @@ def _fallback_plan(query: str) -> dict:
     """LLM 调用失败时的兜底方案"""
     return {
         "core_concepts": query.split()[:3],
-        "synonyms": [],
-        "sub_directions": [],
+        "field_terms": [],
         "queries": {
             "arxiv": query,
             "semantic_scholar": query,

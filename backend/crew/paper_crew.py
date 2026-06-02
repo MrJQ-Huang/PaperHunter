@@ -131,8 +131,9 @@ class PaperCrew:
             await self._send_chat(f"抱歉，任务执行过程中出现错误: {str(e)}")
 
     async def _search_phase(self) -> list[Paper]:
-        """多源并行搜索（LLM 驱动的智能查询生成）"""
+        """三层漏斗搜索：关键词搜索 → 引用链补充 → 去重"""
         from ..utils.query_translator import translate_query, generate_search_plan
+        from ..tools.semantic_scholar_tool import find_paper_by_title, get_paper_references
 
         sources = self.task.sources or [PaperSource.ARXIV, PaperSource.SEMANTIC_SCHOLAR, PaperSource.OPENALEX, PaperSource.CROSSREF]
         original_query = self.task.query
@@ -158,18 +159,19 @@ class PaperCrew:
 
         core_concepts = search_plan.get("core_concepts", [])
         source_queries = search_plan.get("queries", {})
-        synonyms = search_plan.get("synonyms", [])
+        field_terms = search_plan.get("field_terms", [])
 
         if core_concepts:
             await self._log("search", f"✓ 核心概念: {', '.join(core_concepts)}")
-        if synonyms:
-            await self._log("search", f"✓ 同义扩展: {', '.join(synonyms[:5])}")
+        if field_terms:
+            await self._log("search", f"✓ 领域术语: {', '.join(field_terms[:5])}")
 
-        # 为每个数据源使用定制查询，没有定制的用默认查询
-        default_query = translated
         await self._send_chat(f"搜索策略已制定，核心概念: {', '.join(core_concepts) if core_concepts else translated}")
 
-        # 构建搜索任务：每个数据源用对应的查询
+        # ===== 第一层：关键词搜索 =====
+        await self._notify("search", "working", "第一层：关键词搜索...")
+        await self._log("search", "第一层：关键词搜索...")
+
         source_map = {
             PaperSource.ARXIV: search_arxiv,
             PaperSource.SEMANTIC_SCHOLAR: search_semantic_scholar,
@@ -177,7 +179,6 @@ class PaperCrew:
             PaperSource.CROSSREF: search_crossref,
             PaperSource.GOOGLE_SCHOLAR: search_google_scholar,
         }
-
         source_name_map = {
             PaperSource.ARXIV: "arxiv",
             PaperSource.SEMANTIC_SCHOLAR: "semantic_scholar",
@@ -186,16 +187,15 @@ class PaperCrew:
             PaperSource.GOOGLE_SCHOLAR: "google_scholar",
         }
 
+        default_query = translated
         search_funcs = []
         search_meta = []
         for source in sources:
             if source in source_map:
-                # 优先用该数据源的定制查询，没有则用默认查询
                 q = source_queries.get(source_name_map.get(source, ""), default_query)
                 search_funcs.append(source_map[source](q))
                 search_meta.append((source, q))
 
-        # 并行执行
         results = await asyncio.gather(*search_funcs, return_exceptions=True)
 
         all_papers = []
@@ -203,17 +203,64 @@ class PaperCrew:
             source_name, query_used = search_meta[i]
             if isinstance(result, Exception):
                 await self._log("search", f"✗ {source_name.value} 搜索失败: {str(result)}")
-                await self._send_chat(f"⚠️ {source_name.value} 搜索失败: {str(result)}")
             else:
                 all_papers.extend(result)
                 await self._log("search", f"✓ {source_name.value}: 找到 {len(result)} 篇论文")
 
-        await self._log("search", f"共收集 {len(all_papers)} 篇论文，正在去重...")
-        await self._send_chat(f"共收集 {len(all_papers)} 篇论文，正在去重...")
+        layer1_count = len(all_papers)
+        await self._log("search", f"第一层完成，收集 {layer1_count} 篇论文")
 
         # 去重
         deduplicated = deduplicate(all_papers)
-        await self._log("search", f"✓ 去重完成，剩余 {len(deduplicated)} 篇论文")
+        await self._log("search", f"去重后剩余 {len(deduplicated)} 篇")
+
+        # ===== 第二层：引用链补充 =====
+        # 从第一层结果中找高被引论文，获取其 references（基础性工作）
+        if len(deduplicated) > 0:
+            await self._notify("search", "working", "第二层：引用链补充...")
+            await self._log("search", "第二层：引用链追踪...")
+
+            # 按引用数排序，取 Top 5
+            by_citations = sorted(deduplicated, key=lambda p: p.citation_count or 0, reverse=True)
+            top_papers = by_citations[:5]
+            top_ids = []
+
+            for p in top_papers:
+                if (p.citation_count or 0) >= 50:
+                    # 通过标题在 Semantic Scholar 找到 paperId
+                    pid = await find_paper_by_title(p.title)
+                    if pid:
+                        top_ids.append((pid, p.title[:40], p.citation_count or 0))
+
+            if top_ids:
+                await self._log("search", f"  追踪 {len(top_ids)} 篇高被引论文的引用链:")
+                for pid, title, cites in top_ids:
+                    await self._log("search", f"  → {title}... (被引 {cites})")
+
+                # 并行获取所有 references
+                ref_tasks = [get_paper_references(pid, limit=20) for pid, _, _ in top_ids]
+                ref_results = await asyncio.gather(*ref_tasks, return_exceptions=True)
+
+                chain_papers = []
+                for i, refs in enumerate(ref_results):
+                    if isinstance(refs, Exception):
+                        await self._log("search", f"  ✗ 引用链获取失败: {str(refs)}")
+                    else:
+                        # 只保留高被引的 references（引用数 > 100 的更可能是基础性工作）
+                        high_cited = [r for r in refs if (r.citation_count or 0) >= 50]
+                        chain_papers.extend(high_cited)
+                        await self._log("search", f"  ✓ {top_ids[i][1][:30]}... 的引用链: {len(refs)} 篇, 高被引 {len(high_cited)} 篇")
+
+                if chain_papers:
+                    before = len(deduplicated)
+                    deduplicated = deduplicate(deduplicated + chain_papers)
+                    await self._log("search", f"引用链补充 {len(chain_papers)} 篇, 去重后: {before} → {len(deduplicated)}")
+            else:
+                await self._log("search", "  无高被引论文，跳过引用链追踪")
+
+        layer2_total = len(deduplicated)
+        await self._log("search", f"✓ 搜索完成，共 {layer2_total} 篇论文（关键词 {layer1_count} + 引用链补充 {layer2_total - layer1_count}）")
+        await self._send_chat(f"搜索完成：关键词 {layer1_count} 篇 + 引用链补充 {layer2_total - layer1_count} 篇 = 共 {layer2_total} 篇")
 
         # 保存核心概念到 task.filters，供 filter 阶段使用
         if core_concepts:
