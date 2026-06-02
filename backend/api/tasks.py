@@ -194,14 +194,13 @@ async def generate_plan(task_id: str):
     if task.status not in (TaskStatus.PENDING, TaskStatus.PAUSED):
         raise HTTPException(status_code=400, detail=f"Task status is {task.status.value}, cannot generate plan")
 
-    # 读取对话历史（只取最近 20 条，避免过长）
+    # 读取对话历史（只取最近 10 条，每条截断 200 字）
     history = await get_messages(task_id, page=1, per_page=50)
-    recent = history[-20:] if len(history) > 20 else history
+    recent = history[-10:] if len(history) > 10 else history
     conversation = []
     for msg in recent:
         role = "用户" if msg.role == MessageRole.USER else "助手"
-        # 截断单条消息避免过长
-        text = msg.content[:500] if len(msg.content) > 500 else msg.content
+        text = msg.content[:200] if len(msg.content) > 200 else msg.content
         conversation.append(f"{role}: {text}")
     conversation_text = "\n".join(conversation)
 
