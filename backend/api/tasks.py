@@ -189,7 +189,7 @@ async def confirm_task(task_id: str):
     if task.status not in (TaskStatus.PENDING, TaskStatus.PAUSED):
         raise HTTPException(status_code=400, detail=f"Task status is {task.status.value}, cannot start")
 
-    # 从对话历史中提取最终搜索主题，更新 task.query
+    # 从对话历史中提取最终搜索关键词（用户可能通过多轮对话细化了需求）
     refined = await _refine_query_from_history(task_id, task.query)
     if refined != task.query:
         task.query = refined
@@ -234,24 +234,31 @@ async def _refine_query_from_history(task_id: str, original_query: str) -> str:
     from ..models.message import MessageRole
     import aiohttp
     from ..config import settings
+    import re
 
     history = await get_messages(task_id, page=1, per_page=50)
     if len(history) <= 1:
         return original_query
 
     # 策略 1：从最后一条 Agent 消息中提取搜索关键词
-    # Agent 的方案回复通常包含 "关键词" 或 "Keywords" 字段
     agent_msgs = [m for m in history if m.role == MessageRole.AGENT]
     if agent_msgs:
         last_agent_msg = agent_msgs[-1].content
-        # 尝试从 Agent 回复中提取关键词行
-        import re
-        # 匹配 "关键词：xxx" 或 "Keywords: xxx" 或 "- xxx" 列表
-        kw_match = re.search(r'(?:关键词|Keywords?)[：:]\s*(.+?)(?:\n|$)', last_agent_msg, re.IGNORECASE)
-        if kw_match:
-            keywords = kw_match.group(1).strip()
-            if keywords and len(keywords) > 3:
-                return keywords
+        # 匹配多种格式的关键词行
+        patterns = [
+            r'(?:关键词|搜索词|检索词|搜索关键词|Keywords?|Key\s*terms?|Search\s*terms?)[：:]\s*(.+?)(?:\n|$)',
+            r'(?:建议搜索|推荐搜索|搜索策略)[：:]\s*(.+?)(?:\n|$)',
+            r'(?:核心词|主要关键词)[：:]\s*(.+?)(?:\n|$)',
+        ]
+        for pat in patterns:
+            kw_match = re.search(pat, last_agent_msg, re.IGNORECASE)
+            if kw_match:
+                keywords = kw_match.group(1).strip()
+                # 清理：去除序号、引号、多余标点
+                keywords = re.sub(r'^[\d]+[.、)\]]\s*', '', keywords)
+                keywords = keywords.strip('"\'""''')
+                if 3 < len(keywords) < 100:
+                    return keywords
 
     # 策略 2：用 LLM 从整个对话中提取最终搜索方案
     conversation = []
@@ -268,15 +275,18 @@ async def _refine_query_from_history(task_id: str, original_query: str) -> str:
 
     body = {
         "model": settings.llm_model,
-        "max_tokens": 256,
-        "system": """从对话历史中提取助手最终建议的搜索关键词组合。
+        "max_tokens": 100,
+        "system": """从对话历史中提取助手最终确定的搜索关键词。
 
-重点看助手最后给出的搜索方案，里面通常包含明确的关键词列表。
-直接输出关键词，用空格或 AND 连接，不要解释。
+规则：
+- 重点看助手最后给出的搜索方案
+- 只提取核心搜索词，不要附加 "robot"、"foundation model" 等泛化词
+- 用空格连接，不超过 8 个词
+- 不要解释，只输出关键词
 
 示例：
 助手回复：建议搜索策略：关键词 Vision-Language-Action model、VLA、multimodal policy
-输出：Vision-Language-Action model VLA multimodal policy robot foundation model
+输出：Vision-Language-Action model VLA multimodal policy
 
 助手回复：关键词：时域天线测量 探头补偿 time-domain antenna measurement
 输出：time-domain antenna measurement probe compensation""",
@@ -303,7 +313,10 @@ async def _refine_query_from_history(task_id: str, original_query: str) -> str:
                 content += block.get("text", "")
 
         result = content.strip().strip('"').strip("'")
-        return result if result else original_query
+        # 长度验证：过长说明 LLM 输出了多余内容，丢弃
+        if result and 3 < len(result) < 100:
+            return result
+        return original_query
 
     except Exception:
         return original_query

@@ -153,6 +153,9 @@ class PaperCrew:
 
         # 扩展为多个查询变体
         queries = await expand_query(translated)
+        # 确保原始翻译结果在搜索列表中（LLM扩展可能遗漏核心词）
+        if translated not in queries:
+            queries.insert(0, translated)
         if len(queries) > 1:
             await self._log("search", f"✓ 扩展为 {len(queries)} 组检索词")
             await self._send_chat(f"扩展了 {len(queries)} 组检索词以提高覆盖率")
@@ -262,12 +265,13 @@ class PaperCrew:
                 venue_score = 7
             score += venue_score * 0.10
 
-            # 语义相关性 (40%) - 简化版：基于标题关键词匹配
-            query_words = set(self.task.query.lower().split())
+            # 语义相关性 (40%) - 核心主题词匹配，标题权重高于摘要
+            core_words = set(self.task.query.lower().split())
             title_words = set(paper.title.lower().split())
             abstract_words = set(paper.abstract.lower().split()) if paper.abstract else set()
-            overlap = len(query_words & (title_words | abstract_words))
-            rel_score = min(10, overlap * 2.5)
+            title_overlap = len(core_words & title_words)
+            abstract_overlap = len(core_words & abstract_words)
+            rel_score = min(10, title_overlap * 3.0 + abstract_overlap * 1.0)
             score += rel_score * 0.4
 
             paper.relevance_score = round(score, 2)

@@ -84,7 +84,12 @@ async def expand_query(query: str) -> list[str]:
         content = content.strip()
         if content.startswith("["):
             queries = json.loads(content)
-            return queries if queries else [query]
+            if not queries:
+                return [query]
+            # 确保原始查询在列表中
+            if query not in queries:
+                queries.insert(0, query)
+            return queries
         return [query]
 
     except Exception:

@@ -102,6 +102,7 @@ async def agent_reply(task_id: str):
 重要规则：
 - 你只负责讨论和分析，不要自己执行搜索、不要编造论文列表、不要模拟搜索结果
 - 当用户说"开始搜索"之类的话时，回复"好的，正在启动搜索流程！"并加上 [READY] 标记
+- 每次给出搜索方案时，必须包含一行 "关键词：xxx" 明确列出搜索关键词（用空格分隔）
 - 简洁专业，中文回复，150字以内
 
 回复格式（严格遵守）：
@@ -125,7 +126,7 @@ async def agent_reply(task_id: str):
     if "[READY]" in reply_content or _detect_start_intent(reply_content):
         reply_content = re.sub(r'\[READY\]', '', reply_content).strip()
 
-        # 从对话历史中提取最终搜索主题
+        # 从对话历史中提取最终搜索关键词
         from .tasks import _refine_query_from_history, _running_crews, _run_crew
         from ..crew.paper_crew import PaperCrew
         refined = await _refine_query_from_history(task_id, task.query)
@@ -169,11 +170,12 @@ async def _trigger_workflow(task: Task) -> dict:
     """直接触发 Agent 工作流"""
     import asyncio
     from ..crew.paper_crew import PaperCrew
-    from .tasks import _running_crews, _run_crew, _refine_query_from_history
+    from .tasks import _running_crews, _run_crew
 
     task_id = task.id
 
-    # 从对话历史中提取最终搜索主题
+    # 从对话历史中提取最终搜索关键词
+    from .tasks import _refine_query_from_history
     refined = await _refine_query_from_history(task_id, task.query)
     if refined != task.query:
         task.query = refined
