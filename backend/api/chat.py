@@ -124,11 +124,20 @@ async def agent_reply(task_id: str):
     # 如果 LLM 回复中包含 [READY]，也触发工作流
     if "[READY]" in reply_content or _detect_start_intent(reply_content):
         reply_content = re.sub(r'\[READY\]', '', reply_content).strip()
+
+        # 从对话历史中提取最终搜索主题
+        from .tasks import _refine_query_from_history, _running_crews, _run_crew
+        from ..crew.paper_crew import PaperCrew
+        refined = await _refine_query_from_history(task_id, task.query)
+        if refined != task.query:
+            task.query = refined
+            await update_task(task)
+
         reply_msg = Message(
             id=str(uuid.uuid4()),
             task_id=task_id,
             role=MessageRole.AGENT,
-            content=reply_content or "好的，正在启动搜索流程！",
+            content=reply_content or f"好的，以「{task.query}」为主题启动搜索！",
             suggestions=["查看进度"],
             timestamp=datetime.now(),
             agent_name="Chat Agent",
@@ -136,11 +145,8 @@ async def agent_reply(task_id: str):
         await insert_message(reply_msg)
         # 异步触发工作流
         import asyncio
-        from .tasks import _run_crew
-        from ..crew.paper_crew import PaperCrew
         if task.status in (TaskStatus.PENDING, TaskStatus.PAUSED):
             crew = PaperCrew(task)
-            from .tasks import _running_crews
             _running_crews[task_id] = crew
             asyncio.create_task(_run_crew(task_id, crew))
         return reply_msg.model_dump()
@@ -163,15 +169,21 @@ async def _trigger_workflow(task: Task) -> dict:
     """直接触发 Agent 工作流"""
     import asyncio
     from ..crew.paper_crew import PaperCrew
-    from .tasks import _running_crews, _run_crew
+    from .tasks import _running_crews, _run_crew, _refine_query_from_history
 
     task_id = task.id
+
+    # 从对话历史中提取最终搜索主题
+    refined = await _refine_query_from_history(task_id, task.query)
+    if refined != task.query:
+        task.query = refined
+        await update_task(task)
 
     reply_msg = Message(
         id=str(uuid.uuid4()),
         task_id=task_id,
         role=MessageRole.AGENT,
-        content="好的，正在启动搜索流程！即将开始多源检索、智能筛选和自动下载。",
+        content=f"好的，以「{task.query}」为主题启动搜索！即将开始多源检索、智能筛选和自动下载。",
         suggestions=["查看进度"],
         timestamp=datetime.now(),
         agent_name="Chat Agent",

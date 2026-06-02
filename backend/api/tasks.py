@@ -189,12 +189,18 @@ async def confirm_task(task_id: str):
     if task.status not in (TaskStatus.PENDING, TaskStatus.PAUSED):
         raise HTTPException(status_code=400, detail=f"Task status is {task.status.value}, cannot start")
 
+    # 从对话历史中提取最终搜索主题，更新 task.query
+    refined = await _refine_query_from_history(task_id, task.query)
+    if refined != task.query:
+        task.query = refined
+        await update_task(task)
+
     # 发送确认消息
     msg = Message(
         id=str(uuid.uuid4()),
         task_id=task_id,
         role=MessageRole.AGENT,
-        content="好的，我现在开始搜索论文！请稍候...",
+        content=f"好的，我现在以「{task.query}」为主题开始搜索论文！请稍候...",
         timestamp=datetime.now(),
         agent_name="Chat Agent",
     )
@@ -215,6 +221,64 @@ async def _run_crew(task_id: str, crew: PaperCrew):
         await crew.run()
     finally:
         _running_crews.pop(task_id, None)
+
+
+async def _refine_query_from_history(task_id: str, original_query: str) -> str:
+    """从对话历史中提取最终确定的搜索主题（用户可能通过多轮对话细化了需求）"""
+    from ..database import get_messages
+    from ..models.message import MessageRole
+    import aiohttp
+    from ..config import settings
+
+    history = await get_messages(task_id, page=1, per_page=50)
+    if len(history) <= 1:
+        return original_query  # 没有对话历史，用原始查询
+
+    # 构建对话摘要
+    conversation = []
+    for msg in history:
+        role = "用户" if msg.role == MessageRole.USER else "助手"
+        conversation.append(f"{role}: {msg.content}")
+
+    conversation_text = "\n".join(conversation)
+
+    headers = {
+        "x-api-key": settings.llm_api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+
+    body = {
+        "model": settings.llm_model,
+        "max_tokens": 128,
+        "system": "从对话历史中提取用户最终确定的论文搜索主题关键词。用户可能经过多轮讨论细化了需求。只输出最终的搜索关键词，不要解释，不要加引号。\n\n示例：\n对话：\n用户: 帮我搜天线测量的论文\n助手: 好的，您关注哪个方面？\n用户: 主要是时域天线测量和探头补偿\n输出：时域天线测量 探头补偿\n\n对话：\n用户: 找transformer在NLP中的应用\n助手: 搜索范围很大，要缩小吗？\n用户: 只看attention mechanism和机器翻译\n输出：transformer attention mechanism 机器翻译",
+        "messages": [
+            {"role": "user", "content": f"对话历史：\n{conversation_text}\\n\n请提取最终搜索主题关键词："}
+        ],
+    }
+
+    url = f"{settings.llm_base_url}/v1/messages"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=body, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    return original_query
+                data = await resp.json()
+
+        content = ""
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                content += block.get("text", "")
+
+        result = content.strip().strip('"').strip("'")
+        return result if result else original_query
+
+    except Exception:
+        return original_query
 
 
 @router.post("/tasks/{task_id}/terminate")
