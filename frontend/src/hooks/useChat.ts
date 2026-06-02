@@ -183,11 +183,24 @@ export function useChat(
       if (resp.ok) {
         await refreshTask(tid)
         await syncMessages(tid)
+      } else {
+        const err = await resp.text()
+        addMessage(tid, {
+          type: 'chat', from: 'agent',
+          content: `生成方案失败：${err}`,
+          timestamp: new Date().toISOString(),
+        })
       }
-    } catch {} finally {
+    } catch (e) {
+      addMessage(tid, {
+        type: 'chat', from: 'agent',
+        content: `生成方案出错：${e instanceof Error ? e.message : '网络错误'}`,
+        timestamp: new Date().toISOString(),
+      })
+    } finally {
       setIsLoading(false)
     }
-  }, [currentTaskId, taskId, refreshTask, syncMessages])
+  }, [currentTaskId, taskId, refreshTask, syncMessages, addMessage])
 
   const resetPlan = useCallback(async () => {
     const tid = currentTaskId || taskId

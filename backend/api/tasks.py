@@ -241,10 +241,11 @@ async def generate_plan(task_id: str):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 url, json=body, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=20),
+                timeout=aiohttp.ClientTimeout(total=60),
             ) as resp:
                 if resp.status != 200:
-                    raise Exception(f"LLM API error {resp.status}")
+                    error_text = await resp.text()
+                    raise Exception(f"LLM API error {resp.status}: {error_text[:200]}")
                 data = await resp.json()
 
         content = ""
@@ -303,6 +304,8 @@ async def generate_plan(task_id: str):
 
         return task.model_dump()
 
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"LLM 返回的内容无法解析为 JSON: {content[:200]}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成方案失败: {str(e)}")
 
