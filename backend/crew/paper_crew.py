@@ -131,15 +131,15 @@ class PaperCrew:
             await self._send_chat(f"抱歉，任务执行过程中出现错误: {str(e)}")
 
     async def _search_phase(self) -> list[Paper]:
-        """多源并行搜索"""
-        from ..utils.query_translator import translate_query, expand_query
+        """多源并行搜索（LLM 驱动的智能查询生成）"""
+        from ..utils.query_translator import translate_query, generate_search_plan
 
         sources = self.task.sources or [PaperSource.ARXIV, PaperSource.SEMANTIC_SCHOLAR, PaperSource.OPENALEX, PaperSource.CROSSREF]
         original_query = self.task.query
 
-        # 判断是否需要翻译：如果已经是英文关键词，跳过翻译
+        # 判断是否需要翻译
         ascii_ratio = sum(1 for c in original_query if ord(c) < 128) / max(len(original_query), 1)
-        needs_translate = ascii_ratio < 0.7  # 超过 70% 是 ASCII 则视为英文
+        needs_translate = ascii_ratio < 0.7
 
         if needs_translate:
             await self._notify("search", "working", "正在翻译检索词...")
@@ -151,16 +151,25 @@ class PaperCrew:
             translated = original_query
             await self._log("search", f"✓ 检索词已是英文，跳过翻译: {translated}")
 
-        # 扩展为多个查询变体
-        queries = await expand_query(translated)
-        # 确保原始翻译结果在搜索列表中（LLM扩展可能遗漏核心词）
-        if translated not in queries:
-            queries.insert(0, translated)
-        if len(queries) > 1:
-            await self._log("search", f"✓ 扩展为 {len(queries)} 组检索词")
-            await self._send_chat(f"扩展了 {len(queries)} 组检索词以提高覆盖率")
+        # LLM 生成结构化搜索方案
+        await self._notify("search", "working", "正在制定搜索策略...")
+        await self._log("search", "正在分析研究意图，制定搜索策略...")
+        search_plan = await generate_search_plan(translated)
 
-        # 用所有查询变体并行搜索
+        core_concepts = search_plan.get("core_concepts", [])
+        source_queries = search_plan.get("queries", {})
+        synonyms = search_plan.get("synonyms", [])
+
+        if core_concepts:
+            await self._log("search", f"✓ 核心概念: {', '.join(core_concepts)}")
+        if synonyms:
+            await self._log("search", f"✓ 同义扩展: {', '.join(synonyms[:5])}")
+
+        # 为每个数据源使用定制查询，没有定制的用默认查询
+        default_query = translated
+        await self._send_chat(f"搜索策略已制定，核心概念: {', '.join(core_concepts) if core_concepts else translated}")
+
+        # 构建搜索任务：每个数据源用对应的查询
         source_map = {
             PaperSource.ARXIV: search_arxiv,
             PaperSource.SEMANTIC_SCHOLAR: search_semantic_scholar,
@@ -169,13 +178,22 @@ class PaperCrew:
             PaperSource.GOOGLE_SCHOLAR: search_google_scholar,
         }
 
+        source_name_map = {
+            PaperSource.ARXIV: "arxiv",
+            PaperSource.SEMANTIC_SCHOLAR: "semantic_scholar",
+            PaperSource.OPENALEX: "openalex",
+            PaperSource.CROSSREF: "crossref",
+            PaperSource.GOOGLE_SCHOLAR: "google_scholar",
+        }
+
         search_funcs = []
-        search_meta = []  # 记录每个搜索的来源和查询
-        for q in queries:
-            for source in sources:
-                if source in source_map:
-                    search_funcs.append(source_map[source](q))
-                    search_meta.append((source, q))
+        search_meta = []
+        for source in sources:
+            if source in source_map:
+                # 优先用该数据源的定制查询，没有则用默认查询
+                q = source_queries.get(source_name_map.get(source, ""), default_query)
+                search_funcs.append(source_map[source](q))
+                search_meta.append((source, q))
 
         # 并行执行
         results = await asyncio.gather(*search_funcs, return_exceptions=True)
@@ -196,38 +214,71 @@ class PaperCrew:
         # 去重
         deduplicated = deduplicate(all_papers)
         await self._log("search", f"✓ 去重完成，剩余 {len(deduplicated)} 篇论文")
+
+        # 保存核心概念到 task.filters，供 filter 阶段使用
+        if core_concepts:
+            self.task.filters["_core_concepts"] = core_concepts
+
         return deduplicated
 
     async def _filter_phase(self, papers: list[Paper]) -> list[Paper]:
-        """智能筛选"""
+        """两阶段智能筛选：规则快筛 + LLM 精排"""
+        import math
+        from ..utils.llm_scorer import llm_score_papers
+
         filters = self.task.filters
 
-        # 先按硬性条件过滤
+        # ===== 第一阶段：规则快筛 =====
+        await self._log("filter", "第一阶段：规则快筛...")
         filtered = papers
 
+        # 硬性条件过滤
         if filters.get("year_min"):
             year_min = filters["year_min"]
+            before = len(filtered)
             filtered = [p for p in filtered if p.published_date and p.published_date.year >= year_min]
+            await self._log("filter", f"  年份过滤: {before} → {len(filtered)}")
 
         if filters.get("citations_min"):
             cit_min = filters["citations_min"]
+            before = len(filtered)
             filtered = [p for p in filtered if (p.citation_count or 0) >= cit_min]
+            await self._log("filter", f"  引用过滤: {before} → {len(filtered)}")
 
         if filters.get("only_oa"):
+            before = len(filtered)
             filtered = [p for p in filtered if p.is_open_access]
+            await self._log("filter", f"  OA过滤: {before} → {len(filtered)}")
 
-        # 计算综合评分
+        # 关键词硬匹配：标题/摘要必须包含至少一个核心概念
+        core_concepts = filters.get("_core_concepts", [])
+        if not core_concepts:
+            # 兜底：用查询词本身
+            core_concepts = [w for w in self.task.query.lower().split() if len(w) >= 3]
+
+        if core_concepts:
+            core_lower = [c.lower() for c in core_concepts]
+            before = len(filtered)
+            keyword_matched = []
+            for p in filtered:
+                title_lower = p.title.lower()
+                abstract_lower = (p.abstract or "").lower()
+                if any(c in title_lower or c in abstract_lower for c in core_lower):
+                    keyword_matched.append(p)
+            # 如果关键词过滤后还有论文，用过滤结果；否则回退（避免误杀）
+            if keyword_matched:
+                filtered = keyword_matched
+                await self._log("filter", f"  关键词匹配: {before} → {len(filtered)}")
+
+        # 规则评分（用于排序，不用于截断）
         max_citations = max((p.citation_count or 0) for p in filtered) if filtered else 1
         now = datetime.now()
 
         for paper in filtered:
             score = 0.0
-
-            # 统一去除时区信息，避免 offset-naive/aware 冲突
             pub_date = paper.published_date.replace(tzinfo=None) if paper.published_date and paper.published_date.tzinfo else paper.published_date
 
-            # 引用数评分 (20%)
-            import math
+            # 引用数 (20%)
             cit = paper.citation_count or 0
             cit_score = math.log10(cit + 1) / math.log10(max_citations + 1) * 10 if max_citations > 0 else 0
             score += cit_score * 0.2
@@ -235,49 +286,71 @@ class PaperCrew:
             # 时效性 (15%)
             if pub_date:
                 age = (now - pub_date).days / 365
-                if age <= 1:
-                    time_score = 10
-                elif age <= 3:
-                    time_score = 8
-                elif age <= 5:
-                    time_score = 6
-                else:
-                    time_score = 4
+                if age <= 1: time_score = 10
+                elif age <= 3: time_score = 8
+                elif age <= 5: time_score = 6
+                else: time_score = 4
             else:
                 time_score = 5
             score += time_score * 0.15
 
             # 可获取性 (15%)
-            if paper.is_open_access:
-                oa_score = 10
-            elif paper.pdf_url:
-                oa_score = 7
-            else:
-                oa_score = 3
+            if paper.is_open_access: oa_score = 10
+            elif paper.pdf_url: oa_score = 7
+            else: oa_score = 3
             score += oa_score * 0.15
 
             # 来源可信度 (10%)
             if paper.venue and any(kw in (paper.venue or "").lower() for kw in ["nature", "science", "ieee", "acm", "springer"]):
                 venue_score = 10
-            elif paper.source == PaperSource.ARXIV:
-                venue_score = 5
-            else:
-                venue_score = 7
+            elif paper.source == PaperSource.ARXIV: venue_score = 5
+            else: venue_score = 7
             score += venue_score * 0.10
-
-            # 语义相关性 (40%) - 核心主题词匹配，标题权重高于摘要
-            core_words = set(self.task.query.lower().split())
-            title_words = set(paper.title.lower().split())
-            abstract_words = set(paper.abstract.lower().split()) if paper.abstract else set()
-            title_overlap = len(core_words & title_words)
-            abstract_overlap = len(core_words & abstract_words)
-            rel_score = min(10, title_overlap * 3.0 + abstract_overlap * 1.0)
-            score += rel_score * 0.4
 
             paper.relevance_score = round(score, 2)
 
-        # 按评分排序
         filtered.sort(key=lambda p: p.relevance_score or 0, reverse=True)
+
+        await self._log("filter", f"第一阶段完成，剩余 {len(filtered)} 篇论文")
+
+        # ===== 第二阶段：LLM 语义精排 =====
+        if len(filtered) <= 10:
+            # 论文数量少，跳过 LLM 评分
+            await self._log("filter", "论文数量较少，跳过 LLM 精排")
+        else:
+            await self._notify("filter", "working", "正在进行 LLM 语义评分...")
+            await self._log("filter", f"第二阶段：LLM 语义评分（{len(filtered)} 篇）...")
+
+            llm_scores = await llm_score_papers(self.task.query, filtered)
+
+            # 合并 LLM 评分到论文
+            score_map = {s["paper_id"]: s for s in llm_scores}
+            for paper in filtered:
+                llm_result = score_map.get(paper.id)
+                if llm_result:
+                    # 综合评分 = 规则分 × 0.4 + LLM 语义分 × 0.6
+                    rule_score = paper.relevance_score or 0
+                    llm_score = llm_result["relevance"]
+                    paper.relevance_score = round(rule_score * 0.4 + llm_score * 0.6, 2)
+                    paper._llm_relevant = llm_result.get("is_relevant", True)
+                    paper._llm_reason = llm_result.get("reason", "")
+                else:
+                    paper._llm_relevant = True
+                    paper._llm_reason = ""
+
+            # 丢弃 LLM 判定为无关的论文
+            before = len(filtered)
+            filtered = [p for p in filtered if getattr(p, "_llm_relevant", True)]
+            await self._log("filter", f"  LLM 无关判定丢弃: {before} → {len(filtered)}")
+
+            # 按综合评分重排
+            filtered.sort(key=lambda p: p.relevance_score or 0, reverse=True)
+
+            # 打印 top 论文的 LLM 评分理由
+            for p in filtered[:5]:
+                reason = getattr(p, "_llm_reason", "")
+                if reason:
+                    await self._log("filter", f"  ★ {p.title[:50]}... — {reason}")
 
         # 更新数据库中的评分
         for paper in filtered:
