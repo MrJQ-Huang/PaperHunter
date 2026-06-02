@@ -213,28 +213,10 @@ async def generate_plan(task_id: str):
 
     body = {
         "model": settings.llm_model,
-        "max_tokens": 512,
-        "system": """你是学术搜索方案分析师。根据用户和助手的对话历史，提取结构化的搜索方案。
-
-你必须输出纯 JSON，不要输出任何其他内容。格式如下：
-{
-  "query": "核心搜索关键词，英文，用空格分隔，不超过8个词",
-  "sources": ["arxiv", "semantic_scholar", "openalex", "crossref"],
-  "filters": {
-    "year_min": null,
-    "only_oa": false
-  },
-  "summary": "一句话描述搜索策略，中文，30字以内"
-}
-
-规则：
-- query 必须是英文关键词，适合直接提交给学术数据库 API
-- 如果用户说了中文，翻译为英文
-- sources 默认四个全选，除非用户明确排除
-- filters 中 year_min 为 null 表示不限年份，only_oa 为 true 表示只要开放获取
-- summary 用中文简述搜索策略""",
+        "max_tokens": 1024,
+        "system": "从对话中提取搜索方案，输出纯JSON：{\"query\":\"英文关键词\",\"sources\":[\"arxiv\",\"semantic_scholar\",\"openalex\",\"crossref\"],\"filters\":{\"year_min\":null,\"only_oa\":false},\"summary\":\"中文策略30字\"}\n规则：query用英文空格分隔不超8词；只输出JSON不要其他文字。",
         "messages": [
-            {"role": "user", "content": f"对话历史：\n{conversation_text}\n\n请提取结构化搜索方案（纯JSON）："}
+            {"role": "user", "content": f"对话：\n{conversation_text}\n\n输出JSON："}
         ],
     }
 
