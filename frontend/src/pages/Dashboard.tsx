@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAgentStore } from '../stores/agentStore'
 import { usePaperStore, Task } from '../stores/paperStore'
+import { useWebSocket } from '../hooks/useWebSocket'
 import TaskSidebar from '../components/TaskSidebar'
 import ChatWindow from '../components/ChatWindow'
 import PaperDrawer from '../components/PaperDrawer'
@@ -13,6 +14,9 @@ export default function Dashboard() {
 
   const resetAgents = useAgentStore((s) => s.resetAgents)
   const currentTask = usePaperStore((s) => s.currentTask)
+
+  // WebSocket 连接：实时接收 Agent 状态和日志
+  useWebSocket(currentTask?.id || null)
   const setCurrentTask = usePaperStore((s) => s.setCurrentTask)
   const papers = usePaperStore((s) => s.papers)
   const setPapers = usePaperStore((s) => s.setPapers)
