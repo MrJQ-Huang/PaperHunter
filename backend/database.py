@@ -335,13 +335,16 @@ async def update_task(task: Task):
     async with aiosqlite.connect(DB_PATH) as db:
         task.updated_at = datetime.now()
         await db.execute(
-            """UPDATE tasks SET status=?, total_papers_found=?,
-            papers_after_filter=?, papers_downloaded=?, papers_failed=?,
-            updated_at=?, error_message=?, search_plan=? WHERE id=?""",
+            """UPDATE tasks SET query=?, sources=?, filters=?, status=?,
+            total_papers_found=?, papers_after_filter=?, papers_downloaded=?,
+            papers_failed=?, updated_at=?, error_message=?, search_plan=? WHERE id=?""",
             (
-                task.status.value, task.total_papers_found, task.papers_after_filter,
-                task.papers_downloaded, task.papers_failed, task.updated_at.isoformat(),
-                task.error_message,
+                task.query,
+                json.dumps([s.value for s in task.sources]),
+                json.dumps(task.filters),
+                task.status.value, task.total_papers_found,
+                task.papers_after_filter, task.papers_downloaded, task.papers_failed,
+                task.updated_at.isoformat(), task.error_message,
                 json.dumps(task.search_plan, ensure_ascii=False) if task.search_plan else None,
                 task.id,
             ),
