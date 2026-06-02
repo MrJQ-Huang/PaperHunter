@@ -180,15 +180,19 @@ async def _generate_welcome(query: str) -> tuple[str, list[str]]:
         )
 
 
+class UpdateTaskRequest(BaseModel):
+    query: str | None = None
+
+
 @router.patch("/tasks/{task_id}")
-async def update_task_fields(task_id: str, req: dict):
+async def update_task_fields(task_id: str, req: UpdateTaskRequest):
     """更新任务的部分字段（如 query）"""
     task = await get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    if "query" in req and req["query"]:
-        task.query = req["query"].strip()
+    if req.query:
+        task.query = req.query.strip()
     task.updated_at = datetime.now()
     await update_task(task)
     return task.model_dump()
