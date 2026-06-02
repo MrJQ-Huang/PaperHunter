@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useChat } from '../hooks/useChat'
 import { usePaperStore, Task } from '../stores/paperStore'
 import { useAgentStore } from '../stores/agentStore'
@@ -15,6 +16,7 @@ interface Props {
 }
 
 export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskStatus, searchPlan, inputRef: extRef }: Props) {
+  const navigate = useNavigate()
   const {
     messages, input, setInput, sendMessage, createAndSend, handleSuggestion,
     confirmSearch, terminateTask, resetTask, generatePlan, resetPlan, isLoading,
@@ -179,7 +181,7 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
           )}
           {showReviewing && (
             <>
-              <button onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: '/papers' }))} className="flex items-center gap-1.5 px-5 py-2.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-medium rounded-xl hover:from-violet-600 hover:to-purple-600 transition-all shadow-sm shadow-violet-200/40 active:scale-[0.98]">
+              <button onClick={() => navigate('/papers')} className="flex items-center gap-1.5 px-5 py-2.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-medium rounded-xl hover:from-violet-600 hover:to-purple-600 transition-all shadow-sm shadow-violet-200/40 active:scale-[0.98]">
                 <BookOpen size={13} /> 前往论文库筛选
               </button>
               <button onClick={() => sendMessage("让 Agent 帮我筛选")} className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-50 text-blue-500 text-xs font-medium rounded-xl hover:bg-blue-100 transition-all active:scale-[0.98]">
