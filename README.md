@@ -888,3 +888,112 @@ volumes:
 4. **压力测试**: 搜索返回 500+ 论文时，验证分页、筛选、下载的性能
 5. **断连测试**: WebSocket 断连后重连，验证状态同步和消息不丢失
 6. **端到端**: 搜索"ROS2 navigation"，确认从 arXiv/Semantic Scholar 等源获取到相关论文并下载 PDF
+
+---
+
+## 十五、新设备部署指南
+
+### 环境要求
+
+| 依赖 | 版本要求 | 说明 |
+|------|---------|------|
+| **Python** | ≥ 3.11 | 推荐 3.11 或 3.12 |
+| **Node.js** | ≥ 18 | 推荐 LTS 版本 |
+| **Conda**（可选） | — | 推荐用 Conda 管理 Python 环境，也可用 venv |
+
+### Step 1：克隆项目
+
+```bash
+git clone https://gitee.com/MrJQ123321/paperhunter.git
+cd paperhunter
+```
+
+### Step 2：配置环境变量
+
+```bash
+# 复制环境变量模板
+cp .env.example .env
+```
+
+编辑 `.env`，填入你的 API Key：
+
+```env
+# 必填：LLM API 配置（兼容 Anthropic 格式的 API）
+LLM_API_KEY=sk-your-api-key-here
+LLM_BASE_URL=https://api.anthropic.com
+LLM_MODEL=claude-sonnet-4-20250514
+
+# 以下为可选配置，不填也能运行
+SEMANTIC_SCHOLAR_API_KEY=      # Semantic Scholar API Key，提高搜索限额
+UNPAYWALL_EMAIL=you@email.com  # 用于查找论文的 OA 版本
+PROXY_URL=                     # 代理地址（访问 Google Scholar 等需要）
+```
+
+### Step 3：安装后端依赖
+
+```bash
+# 方式 A：使用 Conda（推荐）
+conda create -n paperhunter python=3.11 -y
+conda activate paperhunter
+pip install -e .
+
+# 方式 B：使用 venv
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# macOS/Linux:
+source .venv/bin/activate
+pip install -e .
+```
+
+### Step 4：安装前端依赖
+
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+### Step 5：启动项目
+
+**方式 A：一键启动（Windows）**
+
+```bash
+start.bat
+```
+
+会自动打开两个终端窗口（后端 + 前端），等待 5 秒后自动打开浏览器。
+
+**方式 B：手动启动**
+
+```bash
+# 终端 1：启动后端
+uvicorn backend.main:app --reload --port 8000
+
+# 终端 2：启动前端
+cd frontend
+npm run dev
+```
+
+然后手动打开 http://localhost:3000
+
+### Step 6：验证部署
+
+1. 打开浏览器访问 http://localhost:3000
+2. 页面应自动加载已有任务列表（首次为空）
+3. 在聊天框输入研究主题，如 "Vision Language Action model"
+4. 点击「生成搜索方案」→ 确认方案 → 「确认搜索」
+5. 观察 4 个 Agent 的实时执行状态
+6. 任务完成后，可在右侧论文面板查看和交互论文
+
+### 常见问题
+
+| 问题 | 解决方案 |
+|------|---------|
+| `pip install` 报错 | 确认 Python 版本 ≥ 3.11：`python --version` |
+| `npm install` 报错 | 确认 Node.js 版本 ≥ 18：`node --version` |
+| 后端启动报 `ModuleNotFoundError` | 确认已激活正确的 Python 环境 |
+| 前端页面空白 | 检查后端是否在 8000 端口运行：访问 http://localhost:8000/api/health |
+| LLM 调用失败 | 检查 `.env` 中的 `LLM_API_KEY` 和 `LLM_BASE_URL` 是否正确 |
+| 搜索无结果 | 检查网络连接，部分数据源（Semantic Scholar、OpenAlex）需要外网访问 |
+| 下载 PDF 失败 | 多数论文有 OA 版本，确保 `UNPAYWALL_EMAIL` 已配置 |
