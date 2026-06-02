@@ -212,13 +212,13 @@ async def generate_plan(task_id: str):
     if task.status not in (TaskStatus.PENDING, TaskStatus.PAUSED):
         raise HTTPException(status_code=400, detail=f"Task status is {task.status.value}, cannot generate plan")
 
-    # 读取对话历史（只取最近 10 条，每条截断 200 字）
+    # 读取对话历史（只取最近 6 条，每条截断 100 字，减少 token 用量）
     history = await get_messages(task_id, page=1, per_page=50)
-    recent = history[-10:] if len(history) > 10 else history
+    recent = history[-6:] if len(history) > 6 else history
     conversation = []
     for msg in recent:
         role = "用户" if msg.role == MessageRole.USER else "助手"
-        text = msg.content[:200] if len(msg.content) > 200 else msg.content
+        text = msg.content[:100] if len(msg.content) > 100 else msg.content
         conversation.append(f"{role}: {text}")
     conversation_text = "\n".join(conversation)
 
@@ -230,8 +230,8 @@ async def generate_plan(task_id: str):
 
     body = {
         "model": settings.llm_model,
-        "max_tokens": 1024,
-        "system": "从对话中提取搜索方案，输出纯JSON：{\"query\":\"英文关键词\",\"sources\":[\"arxiv\",\"semantic_scholar\",\"openalex\",\"crossref\"],\"filters\":{\"year_min\":null,\"only_oa\":false},\"summary\":\"中文策略30字\"}\n规则：query用英文空格分隔不超8词；只输出JSON不要其他文字。",
+        "max_tokens": 4096,
+        "system": "从对话提取搜索方案，输出纯JSON：\n{\"query\":\"英文关键词\",\"sources\":[\"arxiv\",\"semantic_scholar\",\"openalex\",\"crossref\"],\"filters\":{},\"summary\":\"策略20字\"}\nquery不超6词英文；只输出JSON。",
         "messages": [
             {"role": "user", "content": f"对话：\n{conversation_text}\n\n输出JSON："}
         ],
