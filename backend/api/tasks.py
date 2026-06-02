@@ -224,7 +224,12 @@ async def _run_crew(task_id: str, crew: PaperCrew):
 
 
 async def _refine_query_from_history(task_id: str, original_query: str) -> str:
-    """从对话历史中提取最终确定的搜索主题（用户可能通过多轮对话细化了需求）"""
+    """从对话历史中提取最终确定的搜索关键词。
+
+    策略：优先从最后一条 Agent 消息中提取搜索方案里的关键词，
+    因为 Agent 的方案回复已经包含了明确的关键词列表。
+    如果没有找到，再用 LLM 从整个对话中提取。
+    """
     from ..database import get_messages
     from ..models.message import MessageRole
     import aiohttp
@@ -232,14 +237,27 @@ async def _refine_query_from_history(task_id: str, original_query: str) -> str:
 
     history = await get_messages(task_id, page=1, per_page=50)
     if len(history) <= 1:
-        return original_query  # 没有对话历史，用原始查询
+        return original_query
 
-    # 构建对话摘要
+    # 策略 1：从最后一条 Agent 消息中提取搜索关键词
+    # Agent 的方案回复通常包含 "关键词" 或 "Keywords" 字段
+    agent_msgs = [m for m in history if m.role == MessageRole.AGENT]
+    if agent_msgs:
+        last_agent_msg = agent_msgs[-1].content
+        # 尝试从 Agent 回复中提取关键词行
+        import re
+        # 匹配 "关键词：xxx" 或 "Keywords: xxx" 或 "- xxx" 列表
+        kw_match = re.search(r'(?:关键词|Keywords?)[：:]\s*(.+?)(?:\n|$)', last_agent_msg, re.IGNORECASE)
+        if kw_match:
+            keywords = kw_match.group(1).strip()
+            if keywords and len(keywords) > 3:
+                return keywords
+
+    # 策略 2：用 LLM 从整个对话中提取最终搜索方案
     conversation = []
     for msg in history:
         role = "用户" if msg.role == MessageRole.USER else "助手"
         conversation.append(f"{role}: {msg.content}")
-
     conversation_text = "\n".join(conversation)
 
     headers = {
@@ -250,10 +268,20 @@ async def _refine_query_from_history(task_id: str, original_query: str) -> str:
 
     body = {
         "model": settings.llm_model,
-        "max_tokens": 128,
-        "system": "从对话历史中提取用户最终确定的论文搜索主题关键词。用户可能经过多轮讨论细化了需求。只输出最终的搜索关键词，不要解释，不要加引号。\n\n示例：\n对话：\n用户: 帮我搜天线测量的论文\n助手: 好的，您关注哪个方面？\n用户: 主要是时域天线测量和探头补偿\n输出：时域天线测量 探头补偿\n\n对话：\n用户: 找transformer在NLP中的应用\n助手: 搜索范围很大，要缩小吗？\n用户: 只看attention mechanism和机器翻译\n输出：transformer attention mechanism 机器翻译",
+        "max_tokens": 256,
+        "system": """从对话历史中提取助手最终建议的搜索关键词组合。
+
+重点看助手最后给出的搜索方案，里面通常包含明确的关键词列表。
+直接输出关键词，用空格或 AND 连接，不要解释。
+
+示例：
+助手回复：建议搜索策略：关键词 Vision-Language-Action model、VLA、multimodal policy
+输出：Vision-Language-Action model VLA multimodal policy robot foundation model
+
+助手回复：关键词：时域天线测量 探头补偿 time-domain antenna measurement
+输出：time-domain antenna measurement probe compensation""",
         "messages": [
-            {"role": "user", "content": f"对话历史：\n{conversation_text}\\n\n请提取最终搜索主题关键词："}
+            {"role": "user", "content": f"对话历史：\n{conversation_text}\n\n请提取最终搜索关键词："}
         ],
     }
 

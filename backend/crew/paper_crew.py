@@ -137,12 +137,19 @@ class PaperCrew:
         sources = self.task.sources or [PaperSource.ARXIV, PaperSource.SEMANTIC_SCHOLAR, PaperSource.OPENALEX, PaperSource.CROSSREF]
         original_query = self.task.query
 
-        # 翻译中文查询为英文检索词
-        await self._notify("search", "working", "正在翻译检索词...")
-        await self._log("search", "正在翻译检索词...")
-        translated = await translate_query(original_query)
-        await self._log("search", f"✓ 检索词已翻译: {translated}")
-        await self._send_chat(f"已将检索词翻译为：{translated}")
+        # 判断是否需要翻译：如果已经是英文关键词，跳过翻译
+        ascii_ratio = sum(1 for c in original_query if ord(c) < 128) / max(len(original_query), 1)
+        needs_translate = ascii_ratio < 0.7  # 超过 70% 是 ASCII 则视为英文
+
+        if needs_translate:
+            await self._notify("search", "working", "正在翻译检索词...")
+            await self._log("search", "正在翻译检索词...")
+            translated = await translate_query(original_query)
+            await self._log("search", f"✓ 检索词已翻译: {translated}")
+            await self._send_chat(f"已将检索词翻译为：{translated}")
+        else:
+            translated = original_query
+            await self._log("search", f"✓ 检索词已是英文，跳过翻译: {translated}")
 
         # 扩展为多个查询变体
         queries = await expand_query(translated)
