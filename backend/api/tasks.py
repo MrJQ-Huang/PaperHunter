@@ -194,12 +194,15 @@ async def generate_plan(task_id: str):
     if task.status not in (TaskStatus.PENDING, TaskStatus.PAUSED):
         raise HTTPException(status_code=400, detail=f"Task status is {task.status.value}, cannot generate plan")
 
-    # 读取对话历史
+    # 读取对话历史（只取最近 20 条，避免过长）
     history = await get_messages(task_id, page=1, per_page=50)
+    recent = history[-20:] if len(history) > 20 else history
     conversation = []
-    for msg in history:
+    for msg in recent:
         role = "用户" if msg.role == MessageRole.USER else "助手"
-        conversation.append(f"{role}: {msg.content}")
+        # 截断单条消息避免过长
+        text = msg.content[:500] if len(msg.content) > 500 else msg.content
+        conversation.append(f"{role}: {text}")
     conversation_text = "\n".join(conversation)
 
     headers = {
@@ -247,11 +250,20 @@ async def generate_plan(task_id: str):
                     error_text = await resp.text()
                     raise Exception(f"LLM API error {resp.status}: {error_text[:200]}")
                 data = await resp.json()
+                # 调试日志
+                import logging
+                logging.info(f"generate-plan LLM response: stop_reason={data.get('stop_reason')}, content_count={len(data.get('content', []))}")
 
         content = ""
         for block in data.get("content", []):
             if block.get("type") == "text":
                 content += block.get("text", "")
+
+        if not content.strip():
+            # 打印完整响应帮助调试
+            import logging
+            logging.warning(f"LLM 返回空内容. stop_reason={data.get('stop_reason')}, usage={data.get('usage')}, content blocks={data.get('content')}")
+            raise Exception(f"LLM 返回空内容 (stop_reason={data.get('stop_reason')})")
 
         # 提取 JSON
         content = content.strip()
