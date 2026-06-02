@@ -209,11 +209,12 @@ export default function Dashboard() {
                   <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
                     currentTask.status === 'running' ? 'bg-blue-50 text-blue-500' :
                     currentTask.status === 'pending' ? 'bg-amber-50 text-amber-500' :
+                    currentTask.status === 'reviewing' ? 'bg-violet-50 text-violet-500' :
                     currentTask.status === 'completed' ? 'bg-emerald-50 text-emerald-500' :
                     currentTask.status === 'failed' ? 'bg-red-50 text-red-400' :
                     'bg-gray-100 text-gray-400'
                   }`}>
-                    {currentTask.status === 'pending' ? '待确认' : currentTask.status === 'running' ? '执行中' : currentTask.status === 'completed' ? '已完成' : currentTask.status === 'failed' ? '失败' : currentTask.status}
+                    {currentTask.status === 'pending' ? '待确认' : currentTask.status === 'running' ? '执行中' : currentTask.status === 'reviewing' ? '待筛选' : currentTask.status === 'completed' ? '已完成' : currentTask.status === 'failed' ? '失败' : currentTask.status}
                   </span>
                 </>
               ) : (

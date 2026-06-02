@@ -55,14 +55,13 @@ class PaperCrew:
         return False
 
     async def run(self):
-        """执行完整工作流"""
+        """执行搜索阶段，完成后等待用户筛选"""
         try:
-            # 更新任务状态
             self.task.status = TaskStatus.RUNNING
             await update_task(self.task)
             await self._notify("chat", "working", "任务开始执行...")
 
-            # Step 1: 搜索
+            # 搜索
             await self._notify("search", "working", "正在多源搜索论文...")
             papers = await self._search_phase()
             if await self._check_terminated():
@@ -77,46 +76,47 @@ class PaperCrew:
                 await update_task(self.task)
                 return
 
-            # 保存搜索结果到数据库（关联当前任务）
+            # 保存到数据库
             for p in papers:
                 p.task_id = self.task.id
             await insert_papers(papers)
 
-            # Step 2: 筛选
-            if await self._check_terminated():
-                return
-            await self._notify("filter", "working", "正在智能筛选论文...")
-            await self._log("filter", "开始智能筛选...")
-            filtered_papers = await self._filter_phase(papers)
-            self.task.papers_after_filter = len(filtered_papers)
+            # 搜索完成，进入 reviewing 状态等待用户操作
+            self.task.status = TaskStatus.REVIEWING
             await update_task(self.task)
-            await self._log("filter", f"✓ 筛选完成，推荐 {len(filtered_papers)} 篇论文")
-            await self._notify("filter", "done", f"筛选完成，推荐 {len(filtered_papers)} 篇论文", 100)
-
-            # 向用户展示筛选结果
             await self._send_chat(
-                f"筛选完成！从 {len(papers)} 篇论文中推荐了 {len(filtered_papers)} 篇高质量论文。",
-                suggestions=["全部下载", "只下载前10篇", "查看推荐列表", "终止任务"],
+                f"搜索完成！共找到 {len(papers)} 篇论文，已入库。\n"
+                f"请前往论文库筛选需要下载的论文，或让 Agent 帮你智能筛选。",
+                suggestions=["前往论文库筛选", "让 Agent 帮我筛选", "一键全部下载"],
             )
 
-            # Step 3: 下载
-            if await self._check_terminated():
-                return
+        except Exception as e:
+            self.task.status = TaskStatus.FAILED
+            self.task.error_message = str(e)
+            await update_task(self.task)
+            await self._notify("chat", "error", f"任务执行失败: {str(e)}")
+            await self._send_chat(f"抱歉，任务执行过程中出现错误: {str(e)}")
+
+    async def download_selected(self, papers: list[Paper]):
+        """下载用户选定的论文"""
+        try:
+            self.task.status = TaskStatus.RUNNING
+            await update_task(self.task)
             await self._notify("download", "working", "正在下载论文 PDF...")
-            await self._log("download", f"开始下载 {len(filtered_papers)} 篇论文 PDF...")
-            download_results = await self._download_phase(filtered_papers)
+            await self._log("download", f"开始下载 {len(papers)} 篇论文 PDF...")
+            await self._send_chat(f"开始下载 {len(papers)} 篇论文...")
+
+            download_results = await self._download_phase(papers)
             self.task.papers_downloaded = download_results["success"]
             self.task.papers_failed = download_results["failed"]
             await update_task(self.task)
             await self._notify("download", "done", f"下载完成: {download_results['success']} 成功, {download_results['failed']} 失败", 100)
 
-            # Step 4: 汇报
+            # 汇报
             await self._send_chat(
-                f"任务完成！\n"
-                f"- 搜索到 {self.task.total_papers_found} 篇论文\n"
-                f"- 推荐 {self.task.papers_after_filter} 篇\n"
-                f"- 成功下载 {self.task.papers_downloaded} 篇\n"
-                f"- 下载失败 {self.task.papers_failed} 篇",
+                f"下载完成！\n"
+                f"- 成功下载 {download_results['success']} 篇\n"
+                f"- 下载失败 {download_results['failed']} 篇",
                 suggestions=["查看论文库", "开始新搜索"],
             )
 
@@ -127,8 +127,7 @@ class PaperCrew:
             self.task.status = TaskStatus.FAILED
             self.task.error_message = str(e)
             await update_task(self.task)
-            await self._notify("chat", "error", f"任务执行失败: {str(e)}")
-            await self._send_chat(f"抱歉，任务执行过程中出现错误: {str(e)}")
+            await self._send_chat(f"下载过程中出现错误: {str(e)}")
 
     async def _search_phase(self) -> list[Paper]:
         """三层漏斗搜索：关键词搜索 → 引用链补充 → 去重"""

@@ -3,7 +3,7 @@ import { useChat } from '../hooks/useChat'
 import { usePaperStore, Task } from '../stores/paperStore'
 import { useAgentStore } from '../stores/agentStore'
 import AgentBubble from './AgentBubble'
-import { Send, Play, StopCircle, RotateCcw, Loader2, Sparkles, FileText, Wand2 } from 'lucide-react'
+import { Send, Play, StopCircle, RotateCcw, Loader2, Sparkles, FileText, Wand2, BookOpen, Download } from 'lucide-react'
 
 interface Props {
   taskId: string | null
@@ -60,9 +60,10 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
   const showGeneratePlan = taskId && taskStatus === 'pending' && !hasPlan
   const showConfirm = taskId && taskStatus === 'pending' && hasPlan
   const showTerminate = taskId && taskStatus === 'running'
+  const showReviewing = taskId && taskStatus === 'reviewing'
   const showReset = taskId && taskStatus && ['completed', 'failed', 'cancelled'].includes(taskStatus)
   const showPaperChat = taskId && taskStatus === 'completed'
-  const showAgents = taskId && taskStatus && ['running', 'completed', 'failed', 'cancelled'].includes(taskStatus)
+  const showAgents = taskId && taskStatus && ['running', 'completed', 'failed', 'cancelled', 'reviewing'].includes(taskStatus)
   const hasAgents = showAgents && ['search', 'filter', 'download', 'chat'].some((k) => {
     const a = agents[k]
     return a && (a.status !== 'idle' || (useAgentStore.getState().agentLogs[k]?.length ?? 0) > 0)
@@ -154,7 +155,7 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
       )}
 
       {/* 操作按钮 */}
-      {(showGeneratePlan || showConfirm || showTerminate || showReset || showPaperChat) && !isLoading && (
+      {(showGeneratePlan || showConfirm || showTerminate || showReviewing || showReset || showPaperChat) && !isLoading && (
         <div className="px-5 py-2.5 border-t border-gray-100 bg-white/80 backdrop-blur flex gap-2 flex-wrap">
           {showGeneratePlan && (
             <button onClick={generatePlan} className="flex items-center gap-1.5 px-5 py-2.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-medium rounded-xl hover:from-violet-600 hover:to-purple-600 transition-all shadow-sm shadow-violet-200/40 active:scale-[0.98]">
@@ -175,6 +176,22 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
             <button onClick={terminateTask} className="flex items-center gap-1.5 px-4 py-2.5 bg-red-50 text-red-500 text-xs font-medium rounded-xl hover:bg-red-100 transition-all active:scale-[0.98]">
               <StopCircle size={13} /> 终止
             </button>
+          )}
+          {showReviewing && (
+            <>
+              <button onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: '/papers' }))} className="flex items-center gap-1.5 px-5 py-2.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-medium rounded-xl hover:from-violet-600 hover:to-purple-600 transition-all shadow-sm shadow-violet-200/40 active:scale-[0.98]">
+                <BookOpen size={13} /> 前往论文库筛选
+              </button>
+              <button onClick={() => sendMessage("让 Agent 帮我筛选")} className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-50 text-blue-500 text-xs font-medium rounded-xl hover:bg-blue-100 transition-all active:scale-[0.98]">
+                <Sparkles size={13} /> Agent 筛选
+              </button>
+              <button onClick={async () => {
+                if (!taskId) return
+                await fetch(`/api/tasks/${taskId}/download`, { method: 'POST' })
+              }} className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-50 text-emerald-500 text-xs font-medium rounded-xl hover:bg-emerald-100 transition-all active:scale-[0.98]">
+                <Download size={13} /> 一键下载全部
+              </button>
+            </>
           )}
           {showPaperChat && (
             <>

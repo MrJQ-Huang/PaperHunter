@@ -7,6 +7,8 @@ interface Props {
   onDownload?: (id: string) => void
   onEdit?: (paper: Paper) => void
   onDelete?: (id: string) => void
+  selected?: boolean
+  onToggleSelect?: (id: string) => void
 }
 
 const sourceColors: Record<string, string> = {
@@ -17,7 +19,7 @@ const sourceColors: Record<string, string> = {
   google_scholar: 'bg-yellow-50 text-yellow-600',
 }
 
-export default function PaperCard({ paper, onDownload, onEdit, onDelete }: Props) {
+export default function PaperCard({ paper, onDownload, onEdit, onDelete, selected, onToggleSelect }: Props) {
   const [copied, setCopied] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
@@ -40,9 +42,17 @@ export default function PaperCard({ paper, onDownload, onEdit, onDelete }: Props
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-4 hover:shadow-md transition-shadow group">
+    <div className={`bg-white rounded-xl border p-4 hover:shadow-md transition-shadow group ${selected ? 'border-violet-300 ring-1 ring-violet-200' : 'border-gray-200'}`}>
       {/* 标题 + 管理按钮 */}
       <div className="flex items-start justify-between gap-2 mb-2">
+        {onToggleSelect && (
+          <input
+            type="checkbox"
+            checked={selected || false}
+            onChange={() => onToggleSelect(paper.id)}
+            className="mt-1 rounded border-gray-300 text-violet-500 shrink-0"
+          />
+        )}
         <h3 className="font-semibold text-gray-900 text-sm leading-snug line-clamp-2 flex-1">
           {paper.title}
         </h3>

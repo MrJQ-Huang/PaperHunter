@@ -42,6 +42,8 @@ export default function PaperList() {
   const [loading, setLoading] = useState(false)
   const [editingPaper, setEditingPaper] = useState<Paper | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
+  const [selectedPapers, setSelectedPapers] = useState<Set<string>>(new Set())
+  const [downloading, setDownloading] = useState(false)
   const perPage = 20
 
   const fetchPapers = useCallback(async () => {
@@ -82,6 +84,58 @@ export default function PaperList() {
     try {
       await fetch(`/api/papers/${paperId}/download`, { method: 'POST' })
     } catch {}
+  }
+
+  const handleDownloadAll = async () => {
+    setDownloading(true)
+    try {
+      // 找到当前任务的 task_id
+      const taskId = selectedTaskId || (tasks.length > 0 ? tasks[0].id : '')
+      if (!taskId) return
+      const resp = await fetch(`/api/tasks/${taskId}/download`, { method: 'POST' })
+      if (resp.ok) {
+        setTimeout(() => fetchPapers(), 2000)
+      }
+    } catch {} finally {
+      setDownloading(false)
+    }
+  }
+
+  const handleDownloadSelected = async () => {
+    if (selectedPapers.size === 0) return
+    setDownloading(true)
+    try {
+      const taskId = selectedTaskId || (tasks.length > 0 ? tasks[0].id : '')
+      if (!taskId) return
+      const resp = await fetch(`/api/tasks/${taskId}/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paper_ids: Array.from(selectedPapers) }),
+      })
+      if (resp.ok) {
+        setSelectedPapers(new Set())
+        setTimeout(() => fetchPapers(), 2000)
+      }
+    } catch {} finally {
+      setDownloading(false)
+    }
+  }
+
+  const toggleSelect = (paperId: string) => {
+    setSelectedPapers(prev => {
+      const next = new Set(prev)
+      if (next.has(paperId)) next.delete(paperId)
+      else next.add(paperId)
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedPapers.size === papers.length) {
+      setSelectedPapers(new Set())
+    } else {
+      setSelectedPapers(new Set(papers.map(p => p.id)))
+    }
   }
 
   const handleDelete = async (paperId: string) => {
@@ -252,6 +306,36 @@ export default function PaperList() {
                 </button>
               )}
             </div>
+            {/* 全选/下载按钮 */}
+            {papers.length > 0 && (
+              <>
+                <button
+                  onClick={toggleSelectAll}
+                  className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 border border-gray-200 rounded-lg"
+                >
+                  {selectedPapers.size === papers.length ? '取消全选' : '全选'}
+                </button>
+                {selectedPapers.size > 0 && (
+                  <button
+                    onClick={handleDownloadSelected}
+                    disabled={downloading}
+                    className="flex items-center gap-1 px-3 py-1.5 text-sm bg-emerald-50 text-emerald-600 rounded-lg hover:bg-emerald-100 disabled:opacity-50"
+                  >
+                    <Download size={14} />
+                    下载选中 ({selectedPapers.size})
+                  </button>
+                )}
+              </>
+            )}
+            {/* 下载全部 */}
+            <button
+              onClick={handleDownloadAll}
+              disabled={downloading}
+              className="flex items-center gap-1 px-3 py-1.5 text-sm text-emerald-600 hover:text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-50 disabled:opacity-50"
+            >
+              <Download size={14} />
+              {downloading ? '下载中...' : '下载全部'}
+            </button>
             {/* 清空按钮 */}
             <button
               onClick={handleClearAll}
@@ -296,6 +380,8 @@ export default function PaperList() {
                   onDownload={handleDownload}
                   onEdit={setEditingPaper}
                   onDelete={handleDelete}
+                  selected={selectedPapers.has(paper.id)}
+                  onToggleSelect={toggleSelect}
                 />
               ))}
             </div>

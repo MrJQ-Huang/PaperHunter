@@ -8,6 +8,7 @@ from .paper import PaperSource
 class TaskStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    REVIEWING = "reviewing"
     PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"

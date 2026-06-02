@@ -519,6 +519,13 @@ def _derive_agent_statuses(task_status: str) -> dict:
             "download": {"agent": "download", "status": "idle", "message": "已取消"},
             "chat": {"agent": "chat", "status": "idle", "message": "已取消"},
         }
+    elif task_status == "reviewing":
+        return {
+            "search": {"agent": "search", "status": "done", "message": "搜索完成"},
+            "filter": {"agent": "filter", "status": "idle", "message": "等待用户筛选"},
+            "download": {"agent": "download", "status": "idle", "message": "等待用户确认"},
+            "chat": {"agent": "chat", "status": "working", "message": "待筛选"},
+        }
     else:  # pending, paused
         return {
             "search": {"agent": "search", "status": "idle", "message": "等待中..."},
@@ -546,6 +553,84 @@ async def resume_task(task_id: str):
     task.status = TaskStatus.RUNNING
     await update_task(task)
     return task.model_dump()
+
+
+class DownloadRequest(BaseModel):
+    paper_ids: list[str] | None = None
+
+
+@router.post("/tasks/{task_id}/download")
+async def download_task_papers(task_id: str, body: DownloadRequest | None = None):
+    """下载该任务的论文（全部或指定 ID 列表）"""
+    task = await get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    from ..database import get_papers, get_paper
+    from ..models.paper import Paper
+
+    if body and body.paper_ids:
+        # 下载指定论文
+        papers = []
+        for pid in body.paper_ids:
+            p = await get_paper(pid)
+            if p and p.download_status in ("pending", "failed"):
+                papers.append(p)
+    else:
+        # 下载该任务所有待下载的论文
+        all_papers, _ = await get_papers(task_id=task_id, per_page=10000)
+        papers = [p for p in all_papers if p.download_status in ("pending", "failed")]
+
+    if not papers:
+        raise HTTPException(status_code=400, detail="没有需要下载的论文")
+
+    # 异步启动下载
+    crew = PaperCrew(task)
+    _running_crews[task_id] = crew
+    import asyncio
+    asyncio.create_task(_run_download(task_id, crew, papers))
+
+    return {"message": f"开始下载 {len(papers)} 篇论文", "count": len(papers)}
+
+
+async def _run_download(task_id: str, crew: PaperCrew, papers):
+    """运行下载并清理"""
+    try:
+        await crew.download_selected(papers)
+    finally:
+        _running_crews.pop(task_id, None)
+
+
+@router.post("/tasks/{task_id}/agent-filter")
+async def agent_filter(task_id: str):
+    """让 Agent 对该任务的论文做 LLM 评分排序（不删除任何论文）"""
+    task = await get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    from ..database import get_papers, update_paper_download
+    from ..utils.llm_scorer import llm_score_papers
+
+    papers, total = await get_papers(task_id=task_id, per_page=10000)
+    if not papers:
+        raise HTTPException(status_code=400, detail="该任务没有论文")
+
+    # LLM 评分
+    scores = await llm_score_papers(task.query, papers)
+    score_map = {s["paper_id"]: s for s in scores}
+
+    updated = 0
+    for p in papers:
+        result = score_map.get(p.id)
+        if result:
+            new_score = result["relevance"]
+            await update_paper_download(p.id, p.local_pdf_path or "", p.download_status or "pending")
+            # 更新 relevance_score
+            from ..database import update_paper
+            await update_paper(p.id, relevance_score=new_score)
+            updated += 1
+
+    return {"message": f"已对 {updated} 篇论文完成评分", "count": updated}
 
 
 @router.delete("/tasks/{task_id}")

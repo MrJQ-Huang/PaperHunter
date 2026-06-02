@@ -112,7 +112,17 @@ async def trigger_download(paper_id: str):
     paper = await get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
-    return {"message": "Download triggered", "paper_id": paper_id}
+    if paper.download_status == "done":
+        return {"message": "Already downloaded", "paper_id": paper_id}
+
+    from ..tools.pdf_download_tool import download_pdf
+    local_path, error = await download_pdf(paper)
+    if local_path:
+        await update_paper_download(paper_id, local_path, "done")
+        return {"message": "Downloaded", "paper_id": paper_id, "path": local_path}
+    else:
+        await update_paper_download(paper_id, None, "failed")
+        return {"message": f"Download failed: {error}", "paper_id": paper_id}
 
 
 @router.get("/papers/{paper_id}/pdf")
