@@ -8,6 +8,7 @@ interface Props {
   onSelectTask: (task: Task) => void
   onNewTask: () => void
   onDeleteTask: (taskId: string) => void
+  onRenameTask: (taskId: string, newQuery: string) => void
 }
 
 function timeAgo(dateStr: string): string {
@@ -27,10 +28,12 @@ const statusInfo: Record<string, { icon: typeof Clock; color: string; label: str
   cancelled: { icon: AlertCircle, color: 'text-gray-400', label: '取消' },
 }
 
-export default function TaskSidebar({ tasks, currentTaskId, onSelectTask, onNewTask, onDeleteTask }: Props) {
+export default function TaskSidebar({ tasks, currentTaskId, onSelectTask, onNewTask, onDeleteTask, onRenameTask }: Props) {
   const [search, setSearch] = useState('')
   const [showCompleted, setShowCompleted] = useState(false)
   const [ctx, setCtx] = useState<{ id: string; x: number; y: number } | null>(null)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [editingName, setEditingName] = useState('')
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -49,6 +52,18 @@ export default function TaskSidebar({ tasks, currentTaskId, onSelectTask, onNewT
 
   const active = filtered.filter((t) => ['running', 'pending', 'paused'].includes(t.status))
   const done = filtered.filter((t) => ['completed', 'failed', 'cancelled'].includes(t.status))
+
+  const startRename = (id: string) => {
+    const task = tasks.find(t => t.id === id)
+    if (task) { setRenamingId(id); setEditingName(task.query); setCtx(null) }
+  }
+
+  const commitRename = () => {
+    if (renamingId && editingName.trim()) {
+      onRenameTask(renamingId, editingName.trim())
+    }
+    setRenamingId(null)
+  }
 
   return (
     <div className="w-64 bg-white border-r border-gray-100 flex flex-col shrink-0">
@@ -91,6 +106,11 @@ export default function TaskSidebar({ tasks, currentTaskId, onSelectTask, onNewT
             isActive={currentTaskId === task.id}
             onSelect={onSelectTask}
             onContextMenu={(e, id) => { e.preventDefault(); setCtx({ id, x: e.clientX, y: e.clientY }) }}
+            isRenaming={renamingId === task.id}
+            editingName={renamingId === task.id ? editingName : undefined}
+            onEditingNameChange={setEditingName}
+            onCommitRename={commitRename}
+            onStartRename={() => startRename(task.id)}
           />
         ))}
 
@@ -110,6 +130,11 @@ export default function TaskSidebar({ tasks, currentTaskId, onSelectTask, onNewT
                 isActive={currentTaskId === task.id}
                 onSelect={onSelectTask}
                 onContextMenu={(e, id) => { e.preventDefault(); setCtx({ id, x: e.clientX, y: e.clientY }) }}
+                isRenaming={renamingId === task.id}
+                editingName={renamingId === task.id ? editingName : undefined}
+                onEditingNameChange={setEditingName}
+                onCommitRename={commitRename}
+                onStartRename={() => startRename(task.id)}
                 dimmed
               />
             ))}
@@ -126,6 +151,10 @@ export default function TaskSidebar({ tasks, currentTaskId, onSelectTask, onNewT
       {/* 右键菜单 */}
       {ctx && (
         <div ref={menuRef} className="ctx-menu fixed bg-white rounded-xl shadow-lg shadow-gray-200/50 border border-gray-100 py-1.5 z-50 min-w-[130px]" style={{ left: ctx.x, top: ctx.y }}>
+          <button onClick={() => startRename(ctx.id)}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 transition-colors">
+            <Pencil size={12} /> 重命名
+          </button>
           <button onClick={() => { navigator.clipboard.writeText(tasks.find(t => t.id === ctx.id)?.query || ''); setCtx(null) }}
             className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 transition-colors">
             <Copy size={12} /> 复制主题
@@ -141,13 +170,23 @@ export default function TaskSidebar({ tasks, currentTaskId, onSelectTask, onNewT
   )
 }
 
-function TaskItem({ task, isActive, onSelect, onContextMenu, dimmed }: {
+function TaskItem({ task, isActive, onSelect, onContextMenu, dimmed, isRenaming, editingName, onEditingNameChange, onCommitRename, onStartRename }: {
   task: Task; isActive: boolean; onSelect: (t: Task) => void
   onContextMenu: (e: React.MouseEvent, id: string) => void; dimmed?: boolean
+  isRenaming?: boolean; editingName?: string; onEditingNameChange?: (v: string) => void
+  onCommitRename?: () => void; onStartRename?: () => void
 }) {
   const info = statusInfo[task.status] || statusInfo.pending
   const Icon = info.icon
   const isRunning = task.status === 'running'
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (isRenaming && inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.select()
+    }
+  }, [isRenaming])
 
   return (
     <div
@@ -156,12 +195,29 @@ function TaskItem({ task, isActive, onSelect, onContextMenu, dimmed }: {
           ? 'bg-violet-50 border border-violet-200/60 shadow-sm shadow-violet-100/50'
           : 'hover:bg-gray-50 border border-transparent'
       } ${dimmed ? 'opacity-50 hover:opacity-80' : ''}`}
-      onClick={() => onSelect(task)}
+      onClick={() => !isRenaming && onSelect(task)}
       onContextMenu={(e) => onContextMenu(e, task.id)}
+      onDoubleClick={(e) => { e.stopPropagation(); onStartRename?.() }}
     >
-      <div className="text-xs font-medium text-gray-700 truncate leading-tight mb-1">
-        {task.query}
-      </div>
+      {isRenaming ? (
+        <input
+          ref={inputRef}
+          type="text"
+          value={editingName ?? task.query}
+          onChange={(e) => onEditingNameChange?.(e.target.value)}
+          onBlur={onCommitRename}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onCommitRename?.()
+            if (e.key === 'Escape') { onEditingNameChange?.(''); onCommitRename?.() }
+          }}
+          className="w-full text-xs font-medium text-gray-700 bg-white border border-violet-300 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-violet-400"
+          onClick={(e) => e.stopPropagation()}
+        />
+      ) : (
+        <div className="text-xs font-medium text-gray-700 truncate leading-tight mb-1">
+          {task.query}
+        </div>
+      )}
       <div className="flex items-center gap-1.5">
         <Icon size={10} className={`${info.color} ${isRunning ? 'animate-spin' : ''}`} />
         <span className={`text-[10px] ${info.color}`}>{info.label}</span>

@@ -86,6 +86,21 @@ export default function Dashboard() {
     } catch {}
   }
 
+  const renameTask = async (taskId: string, newQuery: string) => {
+    try {
+      const resp = await fetch(`/api/tasks/${taskId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: newQuery }),
+      })
+      if (resp.ok) {
+        const updated: Task = await resp.json()
+        setTasks(tasks.map((t) => t.id === taskId ? updated : t))
+        if (currentTask?.id === taskId) setCurrentTask(updated)
+      }
+    } catch {}
+  }
+
   const handleNewTask = () => {
     setCurrentTask(null)
     resetAgents()
@@ -131,6 +146,7 @@ export default function Dashboard() {
         onSelectTask={selectTask}
         onNewTask={handleNewTask}
         onDeleteTask={deleteTask}
+        onRenameTask={renameTask}
       />
 
       {/* 右侧主区域 */}
