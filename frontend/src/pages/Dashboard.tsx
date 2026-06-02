@@ -174,6 +174,7 @@ export default function Dashboard() {
             <ChatWindow
               taskId={currentTask.id}
               taskStatus={currentTask.status}
+              searchPlan={currentTask.search_plan}
               onTaskCreated={handleTaskCreated}
               onTaskUpdated={handleTaskUpdated}
               inputRef={inputRef}

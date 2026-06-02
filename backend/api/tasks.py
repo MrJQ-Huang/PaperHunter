@@ -180,6 +180,158 @@ async def _generate_welcome(query: str) -> tuple[str, list[str]]:
         )
 
 
+@router.post("/tasks/{task_id}/generate-plan")
+async def generate_plan(task_id: str):
+    """从对话历史生成结构化搜索方案"""
+    import json
+    import aiohttp
+    from ..config import settings
+    from ..database import get_messages
+
+    task = await get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status not in (TaskStatus.PENDING, TaskStatus.PAUSED):
+        raise HTTPException(status_code=400, detail=f"Task status is {task.status.value}, cannot generate plan")
+
+    # 读取对话历史
+    history = await get_messages(task_id, page=1, per_page=50)
+    conversation = []
+    for msg in history:
+        role = "用户" if msg.role == MessageRole.USER else "助手"
+        conversation.append(f"{role}: {msg.content}")
+    conversation_text = "\n".join(conversation)
+
+    headers = {
+        "x-api-key": settings.llm_api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+
+    body = {
+        "model": settings.llm_model,
+        "max_tokens": 512,
+        "system": """你是学术搜索方案分析师。根据用户和助手的对话历史，提取结构化的搜索方案。
+
+你必须输出纯 JSON，不要输出任何其他内容。格式如下：
+{
+  "query": "核心搜索关键词，英文，用空格分隔，不超过8个词",
+  "sources": ["arxiv", "semantic_scholar", "openalex", "crossref"],
+  "filters": {
+    "year_min": null,
+    "only_oa": false
+  },
+  "summary": "一句话描述搜索策略，中文，30字以内"
+}
+
+规则：
+- query 必须是英文关键词，适合直接提交给学术数据库 API
+- 如果用户说了中文，翻译为英文
+- sources 默认四个全选，除非用户明确排除
+- filters 中 year_min 为 null 表示不限年份，only_oa 为 true 表示只要开放获取
+- summary 用中文简述搜索策略""",
+        "messages": [
+            {"role": "user", "content": f"对话历史：\n{conversation_text}\n\n请提取结构化搜索方案（纯JSON）："}
+        ],
+    }
+
+    url = f"{settings.llm_base_url}/v1/messages"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=body, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status != 200:
+                    raise Exception(f"LLM API error {resp.status}")
+                data = await resp.json()
+
+        content = ""
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                content += block.get("text", "")
+
+        # 提取 JSON
+        content = content.strip()
+        # 尝试从 markdown code block 中提取
+        import re
+        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+        if json_match:
+            content = json_match.group(1)
+        elif not content.startswith('{'):
+            # 尝试找到第一个 { 到最后一个 }
+            start = content.find('{')
+            end = content.rfind('}')
+            if start != -1 and end != -1:
+                content = content[start:end+1]
+
+        plan = json.loads(content)
+
+        # 验证必需字段
+        if not plan.get("query"):
+            raise Exception("LLM 返回的方案缺少 query 字段")
+
+        # 存入 task
+        task.search_plan = plan
+        task.updated_at = datetime.now()
+        await update_task(task)
+
+        # 发送方案消息给用户
+        sources_str = ", ".join(plan.get("sources", []))
+        filters_desc = []
+        if plan.get("filters", {}).get("year_min"):
+            filters_desc.append(f"{plan['filters']['year_min']}年至今")
+        if plan.get("filters", {}).get("only_oa"):
+            filters_desc.append("仅开放获取")
+        filters_str = "、".join(filters_desc) if filters_desc else "无特殊限制"
+
+        msg = Message(
+            id=str(uuid.uuid4()),
+            task_id=task_id,
+            role=MessageRole.AGENT,
+            content=f"搜索方案已生成：\n\n"
+                    f"搜索词：{plan['query']}\n"
+                    f"数据源：{sources_str}\n"
+                    f"筛选条件：{filters_str}\n"
+                    f"策略说明：{plan.get('summary', '')}",
+            suggestions=["确认搜索", "调整方案"],
+            timestamp=datetime.now(),
+            agent_name="Chat Agent",
+        )
+        await insert_message(msg)
+
+        return task.model_dump()
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成方案失败: {str(e)}")
+
+
+@router.post("/tasks/{task_id}/reset-plan")
+async def reset_plan(task_id: str):
+    """清除搜索方案，回到对话状态"""
+    task = await get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    task.search_plan = None
+    task.updated_at = datetime.now()
+    await update_task(task)
+
+    msg = Message(
+        id=str(uuid.uuid4()),
+        task_id=task_id,
+        role=MessageRole.AGENT,
+        content="方案已清除。请继续告诉我你的搜索需求，准备好了再生成新方案。",
+        suggestions=["生成搜索方案"],
+        timestamp=datetime.now(),
+        agent_name="Chat Agent",
+    )
+    await insert_message(msg)
+
+    return task.model_dump()
+
+
 @router.post("/tasks/{task_id}/confirm")
 async def confirm_task(task_id: str):
     """用户确认后启动 Agent 搜索流程"""
@@ -189,10 +341,17 @@ async def confirm_task(task_id: str):
     if task.status not in (TaskStatus.PENDING, TaskStatus.PAUSED):
         raise HTTPException(status_code=400, detail=f"Task status is {task.status.value}, cannot start")
 
-    # 从对话历史中提取最终搜索关键词（用户可能通过多轮对话细化了需求）
-    refined = await _refine_query_from_history(task_id, task.query)
-    if refined != task.query:
-        task.query = refined
+    # 如果有搜索方案，用方案中的 query 覆盖
+    if task.search_plan:
+        plan = task.search_plan
+        if plan.get("query"):
+            task.query = plan["query"]
+        if plan.get("filters"):
+            merged_filters = dict(task.filters)
+            merged_filters.update(plan["filters"])
+            task.filters = merged_filters
+        if plan.get("sources"):
+            task.sources = [PaperSource(s) for s in plan["sources"]]
         await update_task(task)
 
     # 发送确认消息
@@ -200,7 +359,7 @@ async def confirm_task(task_id: str):
         id=str(uuid.uuid4()),
         task_id=task_id,
         role=MessageRole.AGENT,
-        content=f"好的，我现在以「{task.query}」为主题开始搜索论文！请稍候...",
+        content=f"好的，以「{task.query}」为主题开始搜索论文！请稍候...",
         timestamp=datetime.now(),
         agent_name="Chat Agent",
     )
@@ -221,105 +380,6 @@ async def _run_crew(task_id: str, crew: PaperCrew):
         await crew.run()
     finally:
         _running_crews.pop(task_id, None)
-
-
-async def _refine_query_from_history(task_id: str, original_query: str) -> str:
-    """从对话历史中提取最终确定的搜索关键词。
-
-    策略：优先从最后一条 Agent 消息中提取搜索方案里的关键词，
-    因为 Agent 的方案回复已经包含了明确的关键词列表。
-    如果没有找到，再用 LLM 从整个对话中提取。
-    """
-    from ..database import get_messages
-    from ..models.message import MessageRole
-    import aiohttp
-    from ..config import settings
-    import re
-
-    history = await get_messages(task_id, page=1, per_page=50)
-    if len(history) <= 1:
-        return original_query
-
-    # 策略 1：从最后一条 Agent 消息中提取搜索关键词
-    agent_msgs = [m for m in history if m.role == MessageRole.AGENT]
-    if agent_msgs:
-        last_agent_msg = agent_msgs[-1].content
-        # 匹配多种格式的关键词行
-        patterns = [
-            r'(?:关键词|搜索词|检索词|搜索关键词|Keywords?|Key\s*terms?|Search\s*terms?)[：:]\s*(.+?)(?:\n|$)',
-            r'(?:建议搜索|推荐搜索|搜索策略)[：:]\s*(.+?)(?:\n|$)',
-            r'(?:核心词|主要关键词)[：:]\s*(.+?)(?:\n|$)',
-        ]
-        for pat in patterns:
-            kw_match = re.search(pat, last_agent_msg, re.IGNORECASE)
-            if kw_match:
-                keywords = kw_match.group(1).strip()
-                # 清理：去除序号、引号、多余标点
-                keywords = re.sub(r'^[\d]+[.、)\]]\s*', '', keywords)
-                keywords = keywords.strip('"\'""''')
-                if 3 < len(keywords) < 100:
-                    return keywords
-
-    # 策略 2：用 LLM 从整个对话中提取最终搜索方案
-    conversation = []
-    for msg in history:
-        role = "用户" if msg.role == MessageRole.USER else "助手"
-        conversation.append(f"{role}: {msg.content}")
-    conversation_text = "\n".join(conversation)
-
-    headers = {
-        "x-api-key": settings.llm_api_key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-
-    body = {
-        "model": settings.llm_model,
-        "max_tokens": 100,
-        "system": """从对话历史中提取助手最终确定的搜索关键词。
-
-规则：
-- 重点看助手最后给出的搜索方案
-- 只提取核心搜索词，不要附加 "robot"、"foundation model" 等泛化词
-- 用空格连接，不超过 8 个词
-- 不要解释，只输出关键词
-
-示例：
-助手回复：建议搜索策略：关键词 Vision-Language-Action model、VLA、multimodal policy
-输出：Vision-Language-Action model VLA multimodal policy
-
-助手回复：关键词：时域天线测量 探头补偿 time-domain antenna measurement
-输出：time-domain antenna measurement probe compensation""",
-        "messages": [
-            {"role": "user", "content": f"对话历史：\n{conversation_text}\n\n请提取最终搜索关键词："}
-        ],
-    }
-
-    url = f"{settings.llm_base_url}/v1/messages"
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=body, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status != 200:
-                    return original_query
-                data = await resp.json()
-
-        content = ""
-        for block in data.get("content", []):
-            if block.get("type") == "text":
-                content += block.get("text", "")
-
-        result = content.strip().strip('"').strip("'")
-        # 长度验证：过长说明 LLM 输出了多余内容，丢弃
-        if result and 3 < len(result) < 100:
-            return result
-        return original_query
-
-    except Exception:
-        return original_query
 
 
 @router.post("/tasks/{task_id}/terminate")

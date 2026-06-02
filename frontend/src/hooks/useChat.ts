@@ -174,8 +174,39 @@ export function useChat(
     [sendMessage]
   )
 
+  const generatePlan = useCallback(async () => {
+    const tid = currentTaskId || taskId
+    if (!tid) return
+    setIsLoading(true)
+    try {
+      const resp = await fetch(`/api/tasks/${tid}/generate-plan`, { method: 'POST' })
+      if (resp.ok) {
+        await refreshTask(tid)
+        await syncMessages(tid)
+      }
+    } catch {} finally {
+      setIsLoading(false)
+    }
+  }, [currentTaskId, taskId, refreshTask, syncMessages])
+
+  const resetPlan = useCallback(async () => {
+    const tid = currentTaskId || taskId
+    if (!tid) return
+    setIsLoading(true)
+    try {
+      const resp = await fetch(`/api/tasks/${tid}/reset-plan`, { method: 'POST' })
+      if (resp.ok) {
+        await refreshTask(tid)
+        await syncMessages(tid)
+      }
+    } catch {} finally {
+      setIsLoading(false)
+    }
+  }, [currentTaskId, taskId, refreshTask, syncMessages])
+
   return {
     messages, input, setInput, sendMessage, handleSuggestion,
-    confirmSearch, terminateTask, resetTask, taskId: activeTaskId, isLoading, addMessage,
+    confirmSearch, terminateTask, resetTask, generatePlan, resetPlan,
+    taskId: activeTaskId, isLoading, addMessage,
   }
 }

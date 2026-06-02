@@ -3,20 +3,21 @@ import { useChat } from '../hooks/useChat'
 import { usePaperStore, Task } from '../stores/paperStore'
 import { useAgentStore } from '../stores/agentStore'
 import AgentBubble from './AgentBubble'
-import { Send, Play, StopCircle, RotateCcw, Loader2, Sparkles } from 'lucide-react'
+import { Send, Play, StopCircle, RotateCcw, Loader2, Sparkles, FileText, Wand2 } from 'lucide-react'
 
 interface Props {
   taskId: string | null
   onTaskCreated?: (task: Task) => void
   onTaskUpdated?: (task: Task) => void
   taskStatus?: string
+  searchPlan?: Task['search_plan']
   inputRef?: React.RefObject<HTMLInputElement | null> | React.MutableRefObject<HTMLInputElement | null>
 }
 
-export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskStatus, inputRef: extRef }: Props) {
+export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskStatus, searchPlan, inputRef: extRef }: Props) {
   const {
     messages, input, setInput, sendMessage, handleSuggestion,
-    confirmSearch, terminateTask, resetTask, isLoading,
+    confirmSearch, terminateTask, resetTask, generatePlan, resetPlan, isLoading,
   } = useChat(taskId, onTaskCreated, onTaskUpdated)
   const bottomRef = useRef<HTMLDivElement>(null)
   const localRef = useRef<HTMLInputElement>(null)
@@ -51,7 +52,9 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
     }
   }
 
-  const showConfirm = taskId && taskStatus === 'pending'
+  const hasPlan = searchPlan != null
+  const showGeneratePlan = taskId && taskStatus === 'pending' && !hasPlan
+  const showConfirm = taskId && taskStatus === 'pending' && hasPlan
   const showTerminate = taskId && taskStatus === 'running'
   const showReset = taskId && taskStatus && ['completed', 'failed', 'cancelled'].includes(taskStatus)
   const showAgents = taskId && taskStatus && ['running', 'completed', 'failed', 'cancelled'].includes(taskStatus)
@@ -128,13 +131,40 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
         <div ref={bottomRef} />
       </div>
 
+      {/* 搜索方案卡片 */}
+      {hasPlan && taskStatus === 'pending' && !isLoading && searchPlan && (
+        <div className="px-5 py-2">
+          <div className="bg-gradient-to-br from-violet-50 to-purple-50 rounded-2xl border border-violet-100 p-4 space-y-2.5">
+            <div className="flex items-center gap-2">
+              <FileText size={14} className="text-violet-500" />
+              <span className="text-xs font-semibold text-violet-600">搜索方案</span>
+            </div>
+            <div className="space-y-1.5 text-xs text-gray-600">
+              <div><span className="text-gray-400">搜索词：</span><span className="font-medium text-gray-800">{searchPlan.query}</span></div>
+              <div><span className="text-gray-400">数据源：</span>{searchPlan.sources?.join(', ')}</div>
+              {searchPlan.summary && <div><span className="text-gray-400">策略：</span>{searchPlan.summary}</div>}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 操作按钮 */}
-      {(showConfirm || showTerminate || showReset) && !isLoading && (
+      {(showGeneratePlan || showConfirm || showTerminate || showReset) && !isLoading && (
         <div className="px-5 py-2.5 border-t border-gray-100 bg-white/80 backdrop-blur flex gap-2">
-          {showConfirm && (
-            <button onClick={confirmSearch} className="flex items-center gap-1.5 px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-medium rounded-xl hover:from-emerald-600 hover:to-teal-600 transition-all shadow-sm shadow-emerald-200/40 active:scale-[0.98]">
-              <Play size={13} /> 开始搜索
+          {showGeneratePlan && (
+            <button onClick={generatePlan} className="flex items-center gap-1.5 px-5 py-2.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-medium rounded-xl hover:from-violet-600 hover:to-purple-600 transition-all shadow-sm shadow-violet-200/40 active:scale-[0.98]">
+              <Wand2 size={13} /> 生成搜索方案
             </button>
+          )}
+          {showConfirm && (
+            <>
+              <button onClick={confirmSearch} className="flex items-center gap-1.5 px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-medium rounded-xl hover:from-emerald-600 hover:to-teal-600 transition-all shadow-sm shadow-emerald-200/40 active:scale-[0.98]">
+                <Play size={13} /> 确认搜索
+              </button>
+              <button onClick={resetPlan} className="flex items-center gap-1.5 px-4 py-2.5 bg-gray-50 text-gray-500 text-xs font-medium rounded-xl hover:bg-gray-100 transition-all active:scale-[0.98]">
+                <RotateCcw size={13} /> 调整方案
+              </button>
+            </>
           )}
           {showTerminate && (
             <button onClick={terminateTask} className="flex items-center gap-1.5 px-4 py-2.5 bg-red-50 text-red-500 text-xs font-medium rounded-xl hover:bg-red-100 transition-all active:scale-[0.98]">

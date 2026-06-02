@@ -30,6 +30,12 @@ export interface Task {
   papers_after_filter: number
   papers_downloaded: number
   papers_failed: number
+  search_plan: {
+    query: string
+    sources: string[]
+    filters: Record<string, any>
+    summary: string
+  } | null
   created_at: string
   updated_at: string
   error_message: string | null

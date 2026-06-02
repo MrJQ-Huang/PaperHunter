@@ -24,6 +24,7 @@ class Task(BaseModel):
     papers_after_filter: int = 0
     papers_downloaded: int = 0
     papers_failed: int = 0
+    search_plan: dict | None = None
     created_at: datetime = datetime.now()
     updated_at: datetime = datetime.now()
     error_message: str | None = None

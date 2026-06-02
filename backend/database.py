@@ -57,7 +57,8 @@ async def init_db():
                 papers_failed INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                error_message TEXT
+                error_message TEXT,
+                search_plan TEXT
             );
 
             CREATE TABLE IF NOT EXISTS messages (
@@ -94,6 +95,11 @@ async def init_db():
             await db.execute("CREATE INDEX IF NOT EXISTS idx_papers_task ON papers(task_id)")
         except Exception:
             pass
+
+        try:
+            await db.execute("ALTER TABLE tasks ADD COLUMN search_plan TEXT")
+        except Exception:
+            pass  # 列已存在
 
         await db.commit()
 
@@ -135,6 +141,7 @@ def _task_from_row(row) -> Task:
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
         error_message=row["error_message"],
+        search_plan=json.loads(row["search_plan"]) if row["search_plan"] else None,
     )
 
 
@@ -294,14 +301,15 @@ async def insert_task(task: Task):
             """INSERT INTO tasks
             (id, query, sources, filters, status, total_papers_found,
              papers_after_filter, papers_downloaded, papers_failed,
-             created_at, updated_at, error_message)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+             created_at, updated_at, error_message, search_plan)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 task.id, task.query, json.dumps([s.value for s in task.sources]),
                 json.dumps(task.filters), task.status.value, task.total_papers_found,
                 task.papers_after_filter, task.papers_downloaded, task.papers_failed,
                 task.created_at.isoformat(), task.updated_at.isoformat(),
                 task.error_message,
+                json.dumps(task.search_plan, ensure_ascii=False) if task.search_plan else None,
             ),
         )
         await db.commit()
@@ -329,11 +337,13 @@ async def update_task(task: Task):
         await db.execute(
             """UPDATE tasks SET status=?, total_papers_found=?,
             papers_after_filter=?, papers_downloaded=?, papers_failed=?,
-            updated_at=?, error_message=? WHERE id=?""",
+            updated_at=?, error_message=?, search_plan=? WHERE id=?""",
             (
                 task.status.value, task.total_papers_found, task.papers_after_filter,
                 task.papers_downloaded, task.papers_failed, task.updated_at.isoformat(),
-                task.error_message, task.id,
+                task.error_message,
+                json.dumps(task.search_plan, ensure_ascii=False) if task.search_plan else None,
+                task.id,
             ),
         )
         await db.commit()
