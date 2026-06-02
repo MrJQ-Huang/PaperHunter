@@ -85,6 +85,10 @@ async def agent_reply(task_id: str):
     if task.status in (TaskStatus.PENDING, TaskStatus.PAUSED) and _detect_start_intent(latest_user_msg):
         return await _trigger_workflow(task)
 
+    # 已完成/失败/取消的任务：基于论文上下文对话
+    if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+        return await _paper_chat(task, history)
+
     # 否则走 LLM 对话
     messages = [
         {
@@ -274,3 +278,61 @@ def _clean_content(text: str) -> str:
     # 移除 [READY]
     text = re.sub(r'\[READY\]', '', text)
     return text.strip()
+
+
+async def _paper_chat(task: Task, history: list) -> dict:
+    """已完成任务的论文交互对话"""
+    from ..database import get_papers
+
+    papers, total = await get_papers(task_id=task.id, per_page=30, sort="relevance")
+
+    papers_context = ""
+    if papers:
+        lines = []
+        for i, p in enumerate(papers, 1):
+            authors = ", ".join(p.authors[:3]) if p.authors else "未知"
+            score = f"{p.relevance_score:.1f}" if p.relevance_score else "N/A"
+            cite = p.citation_count or 0
+            abstract = (p.abstract or "")[:150]
+            lines.append(f"{i}. {p.title}\n   作者: {authors} | 来源: {p.source} | 引用: {cite} | 相关度: {score}\n   摘要: {abstract}")
+        papers_context = "\n".join(lines)
+
+    system = f"""你是 PaperHunter 的学术助手。用户之前搜索了关于「{task.query}」的论文，共找到 {task.total_papers_found} 篇。
+
+以下是相关论文列表（按相关度排序）：
+{papers_context}
+
+你可以帮用户：
+1. 总结这些论文的主要研究方向和发现
+2. 根据用户需求推荐最相关的论文
+3. 回答关于这些论文内容的问题
+4. 比较不同论文的方法和贡献
+5. 分析研究趋势和热点
+
+简洁专业，中文回复，200字以内。
+回复格式：
+先写正文，然后换行写：
+[SUGGESTIONS: ["建议1", "建议2", "建议3"]]"""
+
+    messages = [{"role": "system", "content": system}]
+    for msg in history:
+        role = "user" if msg.role == MessageRole.USER else "assistant"
+        messages.append({"role": role, "content": msg.content})
+
+    try:
+        reply_content, suggestions = await _call_llm(messages)
+    except Exception as e:
+        reply_content = f"抱歉，AI 服务暂时不可用: {str(e)}"
+        suggestions = ["重试"]
+
+    reply_msg = Message(
+        id=str(uuid.uuid4()),
+        task_id=task.id,
+        role=MessageRole.AGENT,
+        content=reply_content,
+        suggestions=suggestions,
+        timestamp=datetime.now(),
+        agent_name="Paper Agent",
+    )
+    await insert_message(reply_msg)
+    return reply_msg.model_dump()

@@ -16,7 +16,7 @@ interface Props {
 
 export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskStatus, searchPlan, inputRef: extRef }: Props) {
   const {
-    messages, input, setInput, sendMessage, handleSuggestion,
+    messages, input, setInput, sendMessage, createAndSend, handleSuggestion,
     confirmSearch, terminateTask, resetTask, generatePlan, resetPlan, isLoading,
   } = useChat(taskId, onTaskCreated, onTaskUpdated)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -36,13 +36,17 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
     }
     window.addEventListener('chat-send', handler)
     return () => window.removeEventListener('chat-send', handler)
-  }, [sendMessage, setInput])
+  }, [sendMessage, createAndSend, setInput])
 
   // 发送消息：sendMessage 内部负责 addMessage（同步执行，气泡立刻出现）
   const doSend = (text: string) => {
     if (!text.trim() || isLoading) return
     setInput('')
-    sendMessage(text)
+    if (taskId) {
+      sendMessage(text)
+    } else {
+      createAndSend(text)
+    }
   }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -57,6 +61,7 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
   const showConfirm = taskId && taskStatus === 'pending' && hasPlan
   const showTerminate = taskId && taskStatus === 'running'
   const showReset = taskId && taskStatus && ['completed', 'failed', 'cancelled'].includes(taskStatus)
+  const showPaperChat = taskId && taskStatus === 'completed'
   const showAgents = taskId && taskStatus && ['running', 'completed', 'failed', 'cancelled'].includes(taskStatus)
   const hasAgents = showAgents && ['search', 'filter', 'download', 'chat'].some((k) => {
     const a = agents[k]
@@ -149,8 +154,8 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
       )}
 
       {/* 操作按钮 */}
-      {(showGeneratePlan || showConfirm || showTerminate || showReset) && !isLoading && (
-        <div className="px-5 py-2.5 border-t border-gray-100 bg-white/80 backdrop-blur flex gap-2">
+      {(showGeneratePlan || showConfirm || showTerminate || showReset || showPaperChat) && !isLoading && (
+        <div className="px-5 py-2.5 border-t border-gray-100 bg-white/80 backdrop-blur flex gap-2 flex-wrap">
           {showGeneratePlan && (
             <button onClick={generatePlan} className="flex items-center gap-1.5 px-5 py-2.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-medium rounded-xl hover:from-violet-600 hover:to-purple-600 transition-all shadow-sm shadow-violet-200/40 active:scale-[0.98]">
               <Wand2 size={13} /> 生成搜索方案
@@ -170,6 +175,16 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
             <button onClick={terminateTask} className="flex items-center gap-1.5 px-4 py-2.5 bg-red-50 text-red-500 text-xs font-medium rounded-xl hover:bg-red-100 transition-all active:scale-[0.98]">
               <StopCircle size={13} /> 终止
             </button>
+          )}
+          {showPaperChat && (
+            <>
+              <button onClick={() => sendMessage("帮我总结这些论文的主要研究方向和发现")} className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-50 text-blue-500 text-xs font-medium rounded-xl hover:bg-blue-100 transition-all active:scale-[0.98]">
+                <FileText size={13} /> 论文总结
+              </button>
+              <button onClick={() => sendMessage("推荐最相关的5篇论文并说明理由")} className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-50 text-blue-500 text-xs font-medium rounded-xl hover:bg-blue-100 transition-all active:scale-[0.98]">
+                <Sparkles size={13} /> 推荐论文
+              </button>
+            </>
           )}
           {showReset && (
             <button onClick={resetTask} className="flex items-center gap-1.5 px-4 py-2.5 bg-gray-50 text-gray-500 text-xs font-medium rounded-xl hover:bg-gray-100 transition-all active:scale-[0.98]">

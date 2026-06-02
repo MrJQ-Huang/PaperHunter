@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
 import { usePaperStore, ChatMessage, Task } from '../stores/paperStore'
-import { useWebSocket } from './useWebSocket'
 
 export function useChat(
   taskId: string | null,
@@ -9,42 +8,32 @@ export function useChat(
 ) {
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [currentTaskId, setCurrentTaskId] = useState<string | null>(taskId)
   const addMessage = usePaperStore((s) => s.addMessage)
+  const setMessages = usePaperStore((s) => s.setMessages)
   const messagesByTask = usePaperStore((s) => s.messagesByTask)
-  const activeTaskId = currentTaskId || taskId
-  const messages = activeTaskId ? (messagesByTask[activeTaskId] || []) : []
-  const { sendMessage: wsSend } = useWebSocket(activeTaskId)
+  const messages = taskId ? (messagesByTask[taskId] || []) : []
 
-  // 刷新后端消息到本地（保留用户刚发的消息）
+  // 从后端同步消息到本地（原子写入，避免竞态）
   const syncMessages = useCallback(async (tid: string) => {
     try {
       const resp = await fetch(`/api/messages/${tid}`)
-      if (resp.ok) {
-        const msgs = await resp.json()
-        const existing = usePaperStore.getState().messagesByTask[tid] || []
-        const userMsgs = existing.filter((m) => m.from === 'user')
-        usePaperStore.getState().clearMessages(tid)
-        const addedKeys = new Set<string>()
-        for (const m of msgs) {
-          const key = `${m.role}:${m.content}`
-          addedKeys.add(key)
-          addMessage(tid, {
-            type: 'chat',
-            from: m.role === 'user' ? 'user' : 'agent',
-            content: m.content,
-            timestamp: m.timestamp,
-            suggestions: m.suggestions,
-          })
-        }
-        for (const um of userMsgs) {
-          if (um.content && !addedKeys.has(`user:${um.content}`)) {
-            addMessage(tid, um)
-          }
-        }
-      }
+      if (!resp.ok) return
+      const msgs = await resp.json()
+      const mapped: ChatMessage[] = msgs.map((m: any) => ({
+        type: 'chat' as const,
+        from: m.role === 'user' ? 'user' as const : 'agent' as const,
+        content: m.content,
+        timestamp: m.timestamp,
+        suggestions: m.suggestions,
+      }))
+      // 保留本地用户消息（尚未持久化的）
+      const existing = usePaperStore.getState().messagesByTask[tid] || []
+      const localUserMsgs = existing.filter(
+        (m) => m.from === 'user' && !mapped.some((n) => n.content === m.content)
+      )
+      usePaperStore.getState().setMessages(tid, [...mapped, ...localUserMsgs])
     } catch {}
-  }, [addMessage])
+  }, [])
 
   const refreshTask = useCallback(async (tid: string) => {
     try {
@@ -57,50 +46,16 @@ export function useChat(
   }, [onTaskUpdated])
 
   useEffect(() => {
-    if (taskId && taskId !== currentTaskId) {
-      setCurrentTaskId(taskId)
-      syncMessages(taskId)
-    }
-  }, [taskId, currentTaskId, syncMessages])
+    if (taskId) syncMessages(taskId)
+  }, [taskId, syncMessages])
 
   // 核心发送逻辑
   const sendMessage = useCallback(
     async (content: string) => {
-      if (!content.trim()) return
+      if (!content.trim() || !taskId) return
 
-      let tid = currentTaskId || taskId
-
-      // 没有任务时，先创建任务
-      if (!tid) {
-        setIsLoading(true)
-        try {
-          const resp = await fetch('/api/tasks', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: content.trim() }),
-          })
-          if (resp.ok) {
-            const task: Task = await resp.json()
-            tid = task.id
-            setCurrentTaskId(task.id)
-            onTaskCreated?.(task)
-            // ★ 关键：任务创建后、API 调用前，立即把用户消息加入 store
-            addMessage(task.id, {
-              type: 'chat',
-              from: 'user',
-              content: content.trim(),
-              timestamp: new Date().toISOString(),
-            })
-            await syncMessages(task.id)
-          }
-        } catch {} finally {
-          setIsLoading(false)
-        }
-        return
-      }
-
-      // ★ 有任务时：先把用户消息加入 store（气泡立刻出现），再调 API
-      addMessage(tid, {
+      // 先把用户消息加入 store（气泡立刻出现）
+      addMessage(taskId, {
         type: 'chat',
         from: 'user',
         content: content.trim(),
@@ -109,16 +64,16 @@ export function useChat(
       setIsLoading(true)
 
       try {
-        await fetch(`/api/messages/${tid}`, {
+        await fetch(`/api/messages/${taskId}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content: content.trim() }),
         })
 
-        const replyResp = await fetch(`/api/messages/${tid}/reply`, { method: 'POST' })
+        const replyResp = await fetch(`/api/messages/${taskId}/reply`, { method: 'POST' })
         if (replyResp.ok) {
           const reply = await replyResp.json()
-          addMessage(tid, {
+          addMessage(taskId, {
             type: 'chat',
             from: 'agent',
             content: reply.content,
@@ -130,44 +85,70 @@ export function useChat(
         setIsLoading(false)
       }
     },
-    [currentTaskId, taskId, addMessage, wsSend, onTaskCreated, syncMessages]
+    [taskId, addMessage]
+  )
+
+  // 无任务时创建任务并发送首条消息
+  const createAndSend = useCallback(
+    async (content: string) => {
+      if (!content.trim()) return
+      setIsLoading(true)
+      try {
+        const resp = await fetch('/api/tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: content.trim() }),
+        })
+        if (resp.ok) {
+          const task: Task = await resp.json()
+          onTaskCreated?.(task)
+          addMessage(task.id, {
+            type: 'chat',
+            from: 'user',
+            content: content.trim(),
+            timestamp: new Date().toISOString(),
+          })
+          await syncMessages(task.id)
+        }
+      } catch {} finally {
+        setIsLoading(false)
+      }
+    },
+    [addMessage, onTaskCreated, syncMessages]
   )
 
   const confirmSearch = useCallback(async () => {
-    const tid = currentTaskId || taskId
-    if (!tid) return
-    addMessage(tid, {
+    if (!taskId) return
+    addMessage(taskId, {
       type: 'chat', from: 'user', content: '确认，开始搜索！', timestamp: new Date().toISOString(),
     })
     try {
-      const resp = await fetch(`/api/tasks/${tid}/confirm`, { method: 'POST' })
-      if (resp.ok) await refreshTask(tid)
+      const resp = await fetch(`/api/tasks/${taskId}/confirm`, { method: 'POST' })
+      if (resp.ok) await refreshTask(taskId)
     } catch {}
-  }, [currentTaskId, taskId, addMessage, refreshTask])
+  }, [taskId, addMessage, refreshTask])
 
   const terminateTask = useCallback(async () => {
-    const tid = currentTaskId || taskId
-    if (!tid) return
-    addMessage(tid, {
+    if (!taskId) return
+    addMessage(taskId, {
       type: 'chat', from: 'user', content: '终止当前任务', timestamp: new Date().toISOString(),
     })
     try {
-      const resp = await fetch(`/api/tasks/${tid}/terminate`, { method: 'POST' })
-      if (resp.ok) { await refreshTask(tid); await syncMessages(tid) }
+      const resp = await fetch(`/api/tasks/${taskId}/terminate`, { method: 'POST' })
+      if (resp.ok) { await refreshTask(taskId); await syncMessages(taskId) }
     } catch {}
-  }, [currentTaskId, taskId, addMessage, refreshTask, syncMessages])
+  }, [taskId, addMessage, refreshTask, syncMessages])
 
   const resetTask = useCallback(async () => {
-    const tid = currentTaskId || taskId
-    if (!tid) return
-    addMessage(tid, {
+    if (!taskId) return
+    addMessage(taskId, {
       type: 'chat', from: 'user', content: '重置任务', timestamp: new Date().toISOString(),
     })
     try {
-      const resp = await fetch(`/api/tasks/${tid}/reset`, { method: 'POST' })
-      if (resp.ok) { await refreshTask(tid); await syncMessages(tid) }
+      const resp = await fetch(`/api/tasks/${taskId}/reset`, { method: 'POST' })
+      if (resp.ok) { await refreshTask(taskId); await syncMessages(taskId) }
     } catch {}
-  }, [currentTaskId, taskId, addMessage, refreshTask, syncMessages])
+  }, [taskId, addMessage, refreshTask, syncMessages])
 
   const handleSuggestion = useCallback(
     (suggestion: string) => { sendMessage(suggestion) },
@@ -175,24 +156,23 @@ export function useChat(
   )
 
   const generatePlan = useCallback(async () => {
-    const tid = currentTaskId || taskId
-    if (!tid) return
+    if (!taskId) return
     setIsLoading(true)
     try {
-      const resp = await fetch(`/api/tasks/${tid}/generate-plan`, { method: 'POST' })
+      const resp = await fetch(`/api/tasks/${taskId}/generate-plan`, { method: 'POST' })
       if (resp.ok) {
-        await refreshTask(tid)
-        await syncMessages(tid)
+        await refreshTask(taskId)
+        await syncMessages(taskId)
       } else {
         const err = await resp.text()
-        addMessage(tid, {
+        addMessage(taskId, {
           type: 'chat', from: 'agent',
           content: `生成方案失败：${err}`,
           timestamp: new Date().toISOString(),
         })
       }
     } catch (e) {
-      addMessage(tid, {
+      addMessage(taskId, {
         type: 'chat', from: 'agent',
         content: `生成方案出错：${e instanceof Error ? e.message : '网络错误'}`,
         timestamp: new Date().toISOString(),
@@ -200,26 +180,25 @@ export function useChat(
     } finally {
       setIsLoading(false)
     }
-  }, [currentTaskId, taskId, refreshTask, syncMessages, addMessage])
+  }, [taskId, refreshTask, syncMessages, addMessage])
 
   const resetPlan = useCallback(async () => {
-    const tid = currentTaskId || taskId
-    if (!tid) return
+    if (!taskId) return
     setIsLoading(true)
     try {
-      const resp = await fetch(`/api/tasks/${tid}/reset-plan`, { method: 'POST' })
+      const resp = await fetch(`/api/tasks/${taskId}/reset-plan`, { method: 'POST' })
       if (resp.ok) {
-        await refreshTask(tid)
-        await syncMessages(tid)
+        await refreshTask(taskId)
+        await syncMessages(taskId)
       }
     } catch {} finally {
       setIsLoading(false)
     }
-  }, [currentTaskId, taskId, refreshTask, syncMessages])
+  }, [taskId, refreshTask, syncMessages])
 
   return {
-    messages, input, setInput, sendMessage, handleSuggestion,
+    messages, input, setInput, sendMessage, createAndSend, handleSuggestion,
     confirmSearch, terminateTask, resetTask, generatePlan, resetPlan,
-    taskId: activeTaskId, isLoading, addMessage,
+    taskId, isLoading, addMessage,
   }
 }

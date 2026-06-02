@@ -65,6 +65,7 @@ interface PaperState {
   setTasks: (tasks: Task[]) => void
   addMessage: (taskId: string, msg: ChatMessage) => void
   getMessages: (taskId: string) => ChatMessage[]
+  setMessages: (taskId: string, msgs: ChatMessage[]) => void
   clearMessages: (taskId: string) => void
   updateTask: (task: Task) => void
   removePaper: (paperId: string) => void
@@ -88,6 +89,10 @@ export const usePaperStore = create<PaperState>((set, get) => ({
       },
     })),
   getMessages: (taskId) => get().messagesByTask[taskId] || [],
+  setMessages: (taskId, msgs) =>
+    set((state) => ({
+      messagesByTask: { ...state.messagesByTask, [taskId]: msgs },
+    })),
   clearMessages: (taskId) =>
     set((state) => ({
       messagesByTask: {
