@@ -30,10 +30,12 @@ async def list_papers(
     task_id: str | None = None,
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
-    sort: str = Query("relevance", pattern="^(relevance|date)$"),
+    sort: str = Query("relevance", pattern="^(relevance|date|citations|citations_asc)$"),
     search: str | None = None,
+    download_status: str | None = Query(None, pattern="^(downloaded|pending|failed)$"),
+    source: str | None = None,
 ):
-    papers, total = await get_papers(task_id, page, per_page, sort, search)
+    papers, total = await get_papers(task_id, page, per_page, sort, search, download_status, source)
     return {
         "papers": [p.model_dump() for p in papers],
         "total": total,

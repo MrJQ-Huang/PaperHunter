@@ -1,8 +1,30 @@
 import { useState, useEffect, useCallback } from 'react'
 import { usePaperStore, Paper, Task } from '../stores/paperStore'
 import PaperCard from '../components/PaperCard'
-import FilterPanel from '../components/FilterPanel'
-import { BookOpen, RefreshCw, ChevronLeft, ChevronRight, Search, Trash2, X } from 'lucide-react'
+import { BookOpen, RefreshCw, ChevronLeft, ChevronRight, Search, Trash2, X, Download, AlertCircle, Clock, ArrowDownWideNarrow, ArrowUpNarrowWide, Star, Filter } from 'lucide-react'
+
+const SOURCE_OPTIONS = [
+  { value: '', label: '全部来源' },
+  { value: 'arxiv', label: 'arXiv' },
+  { value: 'semantic_scholar', label: 'Semantic Scholar' },
+  { value: 'openalex', label: 'OpenAlex' },
+  { value: 'crossref', label: 'CrossRef' },
+  { value: 'google_scholar', label: 'Google Scholar' },
+]
+
+const SORT_OPTIONS = [
+  { value: 'relevance', label: '相关度', icon: Star },
+  { value: 'citations', label: '引用↓', icon: ArrowDownWideNarrow },
+  { value: 'citations_asc', label: '引用↑', icon: ArrowUpNarrowWide },
+  { value: 'date', label: '时间↓', icon: Clock },
+]
+
+const DOWNLOAD_FILTERS = [
+  { value: '', label: '全部', icon: null },
+  { value: 'downloaded', label: '已下载', icon: Download },
+  { value: 'pending', label: '待下载', icon: Clock },
+  { value: 'failed', label: '失败', icon: AlertCircle },
+]
 
 export default function PaperList() {
   const papers = usePaperStore((s) => s.papers)
@@ -12,8 +34,10 @@ export default function PaperList() {
   const updatePaper = usePaperStore((s) => s.updatePaper)
   const tasks = usePaperStore((s) => s.tasks)
   const [page, setPage] = useState(1)
-  const [sort, setSort] = useState<'relevance' | 'date'>('relevance')
-  const [selectedTaskId, setSelectedTaskId] = useState<string>('')
+  const [sort, setSort] = useState('relevance')
+  const [selectedTaskId, setSelectedTaskId] = useState('')
+  const [downloadStatus, setDownloadStatus] = useState('')
+  const [source, setSource] = useState('')
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(false)
   const [editingPaper, setEditingPaper] = useState<Paper | null>(null)
@@ -23,9 +47,16 @@ export default function PaperList() {
   const fetchPapers = useCallback(async () => {
     setLoading(true)
     try {
-      const taskParam = selectedTaskId ? `&task_id=${selectedTaskId}` : ''
-      const searchParam = search ? `&search=${encodeURIComponent(search)}` : ''
-      const resp = await fetch(`/api/papers?page=${page}&per_page=${perPage}&sort=${sort}${taskParam}${searchParam}`)
+      const params = new URLSearchParams({
+        page: String(page),
+        per_page: String(perPage),
+        sort,
+      })
+      if (selectedTaskId) params.set('task_id', selectedTaskId)
+      if (search) params.set('search', search)
+      if (downloadStatus) params.set('download_status', downloadStatus)
+      if (source) params.set('source', source)
+      const resp = await fetch(`/api/papers?${params}`)
       if (resp.ok) {
         const data = await resp.json()
         setPapers(data.papers, data.total)
@@ -33,7 +64,7 @@ export default function PaperList() {
     } catch {} finally {
       setLoading(false)
     }
-  }, [page, sort, selectedTaskId, search, setPapers])
+  }, [page, sort, selectedTaskId, search, downloadStatus, source, setPapers])
 
   useEffect(() => {
     fetchPapers()
@@ -108,16 +139,38 @@ export default function PaperList() {
   return (
     <div className="grid grid-cols-12 gap-6">
       {/* 左侧筛选 */}
-      <div className="col-span-3">
-        <FilterPanel onApply={() => fetchPapers()} />
+      <div className="col-span-3 space-y-4">
+        {/* 下载状态 */}
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <span className="font-medium text-sm text-gray-800 block mb-2">下载状态</span>
+          <div className="flex flex-wrap gap-1.5">
+            {DOWNLOAD_FILTERS.map((opt) => {
+              const Icon = opt.icon
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => { setDownloadStatus(opt.value); setPage(1) }}
+                  className={`flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                    downloadStatus === opt.value
+                      ? 'bg-violet-50 text-violet-600 font-medium'
+                      : 'text-gray-500 hover:bg-gray-50'
+                  }`}
+                >
+                  {Icon && <Icon size={12} />}
+                  {opt.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
 
         {/* 任务筛选 */}
-        <div className="mt-4 bg-white rounded-xl border border-gray-200 p-4">
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
           <span className="font-medium text-sm text-gray-800 block mb-2">按任务筛选</span>
           <select
             value={selectedTaskId}
             onChange={(e) => { setSelectedTaskId(e.target.value); setPage(1) }}
-            className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+            className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-200"
           >
             <option value="">全部任务</option>
             {tasks.map((task) => (
@@ -126,26 +179,47 @@ export default function PaperList() {
           </select>
         </div>
 
-        {/* 排序 */}
-        <div className="mt-4 bg-white rounded-xl border border-gray-200 p-4">
-          <span className="font-medium text-sm text-gray-800 block mb-2">排序方式</span>
-          <div className="space-y-1">
-            {[
-              { value: 'relevance', label: '按相关性' },
-              { value: 'date', label: '按日期' },
-            ].map((option) => (
+        {/* 来源筛选 */}
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <span className="font-medium text-sm text-gray-800 block mb-2">数据来源</span>
+          <div className="flex flex-wrap gap-1.5">
+            {SOURCE_OPTIONS.map((opt) => (
               <button
-                key={option.value}
-                onClick={() => setSort(option.value as any)}
-                className={`w-full text-left px-3 py-1.5 text-sm rounded-lg transition-colors ${
-                  sort === option.value
-                    ? 'bg-primary-50 text-primary-600'
-                    : 'text-gray-600 hover:bg-gray-50'
+                key={opt.value}
+                onClick={() => { setSource(opt.value); setPage(1) }}
+                className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                  source === opt.value
+                    ? 'bg-violet-50 text-violet-600 font-medium'
+                    : 'text-gray-500 hover:bg-gray-50'
                 }`}
               >
-                {option.label}
+                {opt.label}
               </button>
             ))}
+          </div>
+        </div>
+
+        {/* 排序 */}
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <span className="font-medium text-sm text-gray-800 block mb-2">排序方式</span>
+          <div className="space-y-1">
+            {SORT_OPTIONS.map((opt) => {
+              const Icon = opt.icon
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => { setSort(opt.value); setPage(1) }}
+                  className={`flex items-center gap-2 w-full text-left px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                    sort === opt.value
+                      ? 'bg-violet-50 text-violet-600'
+                      : 'text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  <Icon size={13} />
+                  {opt.label}
+                </button>
+              )
+            })}
           </div>
         </div>
       </div>

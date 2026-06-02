@@ -214,6 +214,8 @@ async def get_papers(
     per_page: int = 20,
     sort: str = "relevance",
     search: str | None = None,
+    download_status: str | None = None,
+    source: str | None = None,
 ) -> tuple[list[Paper], int]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -228,6 +230,16 @@ async def get_papers(
             conditions.append("(title LIKE ? OR authors LIKE ? OR abstract LIKE ?)")
             kw = f"%{search}%"
             params.extend([kw, kw, kw])
+        if download_status:
+            if download_status == "downloaded":
+                conditions.append("download_status = 'done'")
+            elif download_status == "pending":
+                conditions.append("(download_status IS NULL OR download_status = 'pending')")
+            elif download_status == "failed":
+                conditions.append("download_status = 'failed'")
+        if source:
+            conditions.append("source = ?")
+            params.append(source)
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -238,7 +250,13 @@ async def get_papers(
             total = row["cnt"]
 
         # 排序
-        order = "relevance_score DESC" if sort == "relevance" else "published_date DESC"
+        order_map = {
+            "relevance": "relevance_score DESC",
+            "date": "published_date DESC",
+            "citations": "citation_count DESC",
+            "citations_asc": "citation_count ASC",
+        }
+        order = order_map.get(sort, "relevance_score DESC")
         sql = f"SELECT * FROM papers {where} ORDER BY {order} LIMIT ? OFFSET ?"
         async with db.execute(sql, params + [per_page, offset]) as cur:
             rows = await cur.fetchall()
