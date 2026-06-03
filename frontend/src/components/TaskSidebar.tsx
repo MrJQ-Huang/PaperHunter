@@ -22,6 +22,7 @@ function timeAgo(dateStr: string): string {
 const statusInfo: Record<string, { icon: typeof Clock; color: string; label: string }> = {
   running: { icon: Loader2, color: 'text-blue-500', label: '运行中' },
   pending: { icon: Clock, color: 'text-amber-500', label: '待确认' },
+  reviewing: { icon: Search, color: 'text-violet-500', label: '待筛选' },
   paused: { icon: Pause, color: 'text-gray-400', label: '暂停' },
   completed: { icon: CheckCircle2, color: 'text-emerald-500', label: '完成' },
   failed: { icon: AlertCircle, color: 'text-red-400', label: '失败' },
@@ -50,7 +51,7 @@ export default function TaskSidebar({ tasks, currentTaskId, onSelectTask, onNewT
     return tasks.filter((t) => t.query.toLowerCase().includes(q))
   }, [tasks, search])
 
-  const active = filtered.filter((t) => ['running', 'pending', 'paused'].includes(t.status))
+  const active = filtered.filter((t) => ['running', 'pending', 'reviewing', 'paused'].includes(t.status))
   const done = filtered.filter((t) => ['completed', 'failed', 'cancelled'].includes(t.status))
 
   const startRename = (id: string) => {
