@@ -77,6 +77,19 @@ class PaperCrew:
                 await update_task(self.task)
                 return
 
+            # 先入库原始搜索结果，避免 LLM 标注较慢时前端长时间显示 0 篇。
+            for p in papers:
+                p.task_id = self.task.id
+                self._apply_fallback_annotation(p)
+            await insert_papers(papers)
+            await self._graph_update({
+                "phase": "indexing",
+                "status": "indexing",
+                "found_count": len(papers),
+                "indexed_count": len(papers),
+                "message": "搜索结果已先行入库，正在补充语义标注",
+            })
+
             # 自动语义排序与标签标注，入库后即可按综述/基础/子方向筛选。
             await self._notify("filter", "working", "正在语义排序并标注论文...")
             await self._graph_update({"phase": "indexing", "status": "indexing", "message": "正在语义排序并标注论文"})
@@ -86,7 +99,7 @@ class PaperCrew:
             await self._notify("filter", "done", f"标注完成，保留 {len(papers)} 篇论文", 100)
             await self._graph_update({"phase": "indexing", "status": "done", "indexed_count": len(papers), "message": "论文标注完成"})
 
-            # 保存到数据库
+            # 刷新数据库中的评分和标注字段
             for p in papers:
                 p.task_id = self.task.id
             await insert_papers(papers)

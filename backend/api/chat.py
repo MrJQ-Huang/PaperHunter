@@ -170,6 +170,106 @@ def _embodied_brain_trace_plan(research_text: str) -> dict | None:
     }
 
 
+def _vla_trace_plan(research_text: str) -> dict | None:
+    """Vision-Language-Action / π 系列溯源需求的确定性方案。"""
+    text = research_text.lower()
+    has_vla = "vla" in text or "vision-language-action" in text or "视觉" in research_text
+    has_robot = any(k in research_text for k in ["具身", "机器人", "动作", "模型"]) or any(
+        k in text for k in ["robot", "robotics", "embodied", "action"]
+    )
+    if not (has_vla and has_robot):
+        return None
+
+    wants_pi = "π" in research_text or "pi0" in text or "physical intelligence" in text
+    title = "VLA关键论文与π系列模型溯源" if wants_pi else "VLA关键论文时间线溯源"
+    return {
+        "query": "vision language action models robotics pi0 OpenVLA RT-2 Octo diffusion policy",
+        "task_title": title,
+        "search_mode": "subtopic_deep_dive",
+        "goal": "按时间线追溯 Vision-Language-Action 领域关键论文，覆盖π系列模型、其他代表性VLA模型及底层方法论来源",
+        "domain": "Vision-Language-Action models for robotics",
+        "clarifying_questions": [],
+        "sources": ["arxiv", "semantic_scholar", "openalex", "crossref"],
+        "filters": {},
+        "core_concepts": ["vision-language-action", "robotics", "action generation"],
+        "field_terms": [
+            "embodied AI", "robot foundation model", "robot manipulation",
+            "imitation learning", "diffusion policy", "large-scale robot data",
+        ],
+        "exclude_terms": ["Very Large Array", "radio astronomy", "telescope"],
+        "preferred_paper_types": ["survey", "foundation", "method", "system", "benchmark"],
+        "subtopics": [
+            {
+                "name": "Physical Intelligence π Series",
+                "intent": "π0、π0.5 等π系列模型及其技术报告、架构和训练范式",
+                "required_terms": ["Physical Intelligence", "pi0"],
+                "optional_terms": ["π0", "pi-zero", "vision language action", "robot foundation model"],
+                "queries": {
+                    "arxiv": '("Physical Intelligence" OR pi0 OR "pi zero" OR "π0") AND (robot OR robotics OR "vision language action")',
+                    "semantic_scholar": "Physical Intelligence pi0 pi-zero vision language action robot foundation model",
+                    "openalex": "Physical Intelligence pi0 vision language action robot foundation model",
+                    "crossref": "Physical Intelligence pi0 vision language action robot foundation model",
+                },
+            },
+            {
+                "name": "Representative VLA Models",
+                "intent": "RT-1、RT-2、OpenVLA、Octo、PaLM-E 等代表性VLA/机器人基础模型",
+                "required_terms": ["vision language action", "robotics"],
+                "optional_terms": ["RT-1", "RT-2", "OpenVLA", "Octo", "PaLM-E", "RoboCat"],
+                "queries": {
+                    "arxiv": '(RT-1 OR RT-2 OR OpenVLA OR Octo OR PaLM-E OR RoboCat OR "vision language action") AND (robot OR robotics)',
+                    "semantic_scholar": "RT-1 RT-2 OpenVLA Octo PaLM-E RoboCat vision language action robotics",
+                    "openalex": "RT-1 RT-2 OpenVLA Octo PaLM-E vision language action robotics",
+                    "crossref": "RT-1 RT-2 OpenVLA Octo PaLM-E vision language action robotics",
+                },
+            },
+            {
+                "name": "Action Generation and Diffusion Policies",
+                "intent": "VLA 和π系列依赖的动作生成、扩散策略、模仿学习和行为克隆方法源头",
+                "required_terms": ["diffusion policy", "robot"],
+                "optional_terms": ["behavior cloning", "imitation learning", "action chunking", "ACT"],
+                "queries": {
+                    "arxiv": '("diffusion policy" OR "action chunking" OR "behavior cloning" OR "imitation learning") AND (robot OR robotics OR manipulation)',
+                    "semantic_scholar": "diffusion policy action chunking behavior cloning imitation learning robot manipulation",
+                    "openalex": "diffusion policy action chunking imitation learning robot manipulation",
+                    "crossref": "diffusion policy behavior cloning imitation learning robot manipulation",
+                },
+            },
+            {
+                "name": "Vision-Language and Robot Data Foundations",
+                "intent": "VLA 的视觉语言预训练、大规模机器人数据集和泛化能力来源",
+                "required_terms": ["vision language", "robot"],
+                "optional_terms": ["CLIP", "VLM", "multimodal pretraining", "Open X-Embodiment", "robot dataset"],
+                "queries": {
+                    "arxiv": '("vision-language" OR CLIP OR VLM OR "multimodal pretraining" OR "Open X-Embodiment") AND (robot OR robotics OR embodied)',
+                    "semantic_scholar": "vision language pretraining CLIP VLM Open X-Embodiment robot dataset embodied AI",
+                    "openalex": "vision language pretraining Open X-Embodiment robot dataset embodied AI",
+                    "crossref": "vision language pretraining robot dataset embodied AI",
+                },
+            },
+        ],
+        "queries": {
+            "arxiv": '("vision language action" OR VLA OR OpenVLA OR RT-2 OR Octo OR pi0 OR "diffusion policy") AND (robot OR robotics)',
+            "semantic_scholar": "vision language action VLA robotics pi0 OpenVLA RT-2 Octo diffusion policy",
+            "openalex": "vision language action robotics pi0 OpenVLA RT-2 Octo diffusion policy",
+            "crossref": "vision language action robotics pi0 OpenVLA RT-2 Octo diffusion policy",
+        },
+        "summary": "围绕π系列、代表性VLA模型、动作生成方法和视觉语言/机器人数据基础做时间线溯源。",
+    }
+
+
+def _plan_seems_generic(plan: dict | None) -> bool:
+    if not isinstance(plan, dict):
+        return True
+    subtopics = plan.get("subtopics") or []
+    query = str(plan.get("query") or "")
+    if len(subtopics) <= 1 and len(query) > 80:
+        return True
+    if "检索相关论文" in str(plan.get("goal") or "") and len(query) > 60:
+        return True
+    return False
+
+
 @router.get("/messages/{task_id}")
 async def list_messages(
     task_id: str,
@@ -308,18 +408,18 @@ async def _ensure_search_plan(task: Task) -> Task:
     """确保任务有可执行搜索方案。LLM 结构化失败时使用兜底方案，避免启动链路卡死。"""
     from .tasks import _build_search_plan, _extract_topic
 
-    if task.search_plan:
-        return task
-
     history = await get_messages(task.id, page=1, per_page=100)
     research_text = _conversation_research_text(history)
-    deterministic_plan = _embodied_brain_trace_plan(research_text)
-    if deterministic_plan:
+    deterministic_plan = _vla_trace_plan(research_text) or _embodied_brain_trace_plan(research_text)
+    if deterministic_plan and (not task.search_plan or _plan_seems_generic(task.search_plan)):
         task.search_plan = deterministic_plan
         task.query = deterministic_plan["task_title"]
         task.sources = [PaperSource(s) for s in deterministic_plan["sources"]]
         task.updated_at = datetime.now()
         await update_task(task)
+        return task
+
+    if task.search_plan:
         return task
 
     if research_text:

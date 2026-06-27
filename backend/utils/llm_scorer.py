@@ -1,6 +1,7 @@
 """LLM 批量语义评分 — 用于 Filter Agent 第二阶段精排"""
 
 import aiohttp
+import asyncio
 import json
 from ..config import settings
 from ..models.paper import Paper
@@ -27,14 +28,47 @@ async def llm_score_papers(
         "quality_tags": list[str],
     }
     """
-    results = []
+    semaphore = asyncio.Semaphore(3)
 
+    async def score_limited(batch: list[Paper]) -> list[dict]:
+        async with semaphore:
+            return await _score_batch(query, batch)
+
+    batches = []
     for i in range(0, len(papers), batch_size):
         batch = papers[i : i + batch_size]
-        batch_result = await _score_batch(query, batch)
-        results.extend(batch_result)
+        batches.append(batch)
 
+    gathered = await asyncio.gather(
+        *(score_limited(batch) for batch in batches),
+        return_exceptions=True,
+    )
+
+    results = []
+    for batch, batch_result in zip(batches, gathered):
+        if isinstance(batch_result, Exception):
+            results.extend(_default_scores(batch, "评分调用失败"))
+        else:
+            results.extend(batch_result)
     return results
+
+
+def _default_scores(papers: list[Paper], reason: str) -> list[dict]:
+    return [
+        {
+            "paper_id": p.id,
+            "relevance": 5,
+            "is_relevant": True,
+            "reason": reason,
+            "paper_type": "unknown",
+            "learning_role": "niche_detail",
+            "difficulty": "intermediate",
+            "subtopics": p.subtopics,
+            "method_tags": [],
+            "quality_tags": [],
+        }
+        for p in papers
+    ]
 
 
 async def _score_batch(query: str, papers: list[Paper]) -> list[dict]:
@@ -107,21 +141,7 @@ async def _score_batch(query: str, papers: list[Paper]) -> list[dict]:
             ) as resp:
                 if resp.status != 200:
                     # LLM 调用失败，返回默认中等分数
-                    return [
-                        {
-                            "paper_id": p.id,
-                            "relevance": 5,
-                            "is_relevant": True,
-                            "reason": "LLM评分失败，默认通过",
-                            "paper_type": "unknown",
-                            "learning_role": "niche_detail",
-                            "difficulty": "intermediate",
-                            "subtopics": p.subtopics,
-                            "method_tags": [],
-                            "quality_tags": [],
-                        }
-                        for p in papers
-                    ]
+                    return _default_scores(papers, "LLM评分失败，默认通过")
                 data = await resp.json()
 
         content = ""
@@ -184,21 +204,7 @@ async def _score_batch(query: str, papers: list[Paper]) -> list[dict]:
 
     except Exception:
         # 解析失败，返回默认分数
-        return [
-            {
-                "paper_id": p.id,
-                "relevance": 5,
-                "is_relevant": True,
-                "reason": "评分解析失败",
-                "paper_type": "unknown",
-                "learning_role": "niche_detail",
-                "difficulty": "intermediate",
-                "subtopics": p.subtopics,
-                "method_tags": [],
-                "quality_tags": [],
-            }
-            for p in papers
-        ]
+        return _default_scores(papers, "评分解析失败")
 
 
 def _as_str_list(value) -> list[str]:
