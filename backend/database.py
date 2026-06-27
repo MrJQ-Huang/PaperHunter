@@ -35,6 +35,14 @@ async def init_db():
                 venue TEXT,
                 is_open_access BOOLEAN DEFAULT 0,
                 topics TEXT,
+                paper_type TEXT,
+                subtopics TEXT,
+                learning_role TEXT,
+                difficulty TEXT,
+                method_tags TEXT,
+                quality_tags TEXT,
+                annotation_reason TEXT,
+                search_subtopic TEXT,
                 local_pdf_path TEXT,
                 download_status TEXT DEFAULT 'pending',
                 relevance_score REAL,
@@ -101,6 +109,21 @@ async def init_db():
         except Exception:
             pass  # 列已存在
 
+        for column, ddl in {
+            "paper_type": "ALTER TABLE papers ADD COLUMN paper_type TEXT",
+            "subtopics": "ALTER TABLE papers ADD COLUMN subtopics TEXT",
+            "learning_role": "ALTER TABLE papers ADD COLUMN learning_role TEXT",
+            "difficulty": "ALTER TABLE papers ADD COLUMN difficulty TEXT",
+            "method_tags": "ALTER TABLE papers ADD COLUMN method_tags TEXT",
+            "quality_tags": "ALTER TABLE papers ADD COLUMN quality_tags TEXT",
+            "annotation_reason": "ALTER TABLE papers ADD COLUMN annotation_reason TEXT",
+            "search_subtopic": "ALTER TABLE papers ADD COLUMN search_subtopic TEXT",
+        }.items():
+            try:
+                await db.execute(ddl)
+            except Exception:
+                pass
+
         await db.commit()
 
 
@@ -119,6 +142,14 @@ def _paper_from_row(row) -> Paper:
         venue=row["venue"],
         is_open_access=bool(row["is_open_access"]),
         topics=json.loads(row["topics"]) if row["topics"] else [],
+        paper_type=row["paper_type"] if "paper_type" in row.keys() else None,
+        subtopics=json.loads(row["subtopics"]) if "subtopics" in row.keys() and row["subtopics"] else [],
+        learning_role=row["learning_role"] if "learning_role" in row.keys() else None,
+        difficulty=row["difficulty"] if "difficulty" in row.keys() else None,
+        method_tags=json.loads(row["method_tags"]) if "method_tags" in row.keys() and row["method_tags"] else [],
+        quality_tags=json.loads(row["quality_tags"]) if "quality_tags" in row.keys() and row["quality_tags"] else [],
+        annotation_reason=row["annotation_reason"] if "annotation_reason" in row.keys() else None,
+        search_subtopic=row["search_subtopic"] if "search_subtopic" in row.keys() else None,
         local_pdf_path=row["local_pdf_path"],
         download_status=row["download_status"] or "pending",
         relevance_score=row["relevance_score"],
@@ -165,14 +196,19 @@ async def insert_paper(paper: Paper):
             """INSERT OR REPLACE INTO papers
             (id, title, authors, abstract, doi, url, pdf_url, source,
              published_date, citation_count, venue, is_open_access, topics,
+             paper_type, subtopics, learning_role, difficulty, method_tags,
+             quality_tags, annotation_reason, search_subtopic,
              local_pdf_path, download_status, relevance_score, created_at, task_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 paper.id, paper.title, json.dumps(paper.authors), paper.abstract,
                 paper.doi, paper.url, paper.pdf_url, paper.source.value,
                 paper.published_date.isoformat() if paper.published_date else None,
                 paper.citation_count, paper.venue, paper.is_open_access,
-                json.dumps(paper.topics), paper.local_pdf_path, paper.download_status,
+                json.dumps(paper.topics), paper.paper_type, json.dumps(paper.subtopics),
+                paper.learning_role, paper.difficulty, json.dumps(paper.method_tags),
+                json.dumps(paper.quality_tags), paper.annotation_reason, paper.search_subtopic,
+                paper.local_pdf_path, paper.download_status,
                 paper.relevance_score, paper.created_at.isoformat(), paper.task_id,
             ),
         )
@@ -186,14 +222,19 @@ async def insert_papers(papers: list[Paper]):
                 """INSERT OR REPLACE INTO papers
                 (id, title, authors, abstract, doi, url, pdf_url, source,
                  published_date, citation_count, venue, is_open_access, topics,
+                 paper_type, subtopics, learning_role, difficulty, method_tags,
+                 quality_tags, annotation_reason, search_subtopic,
                  local_pdf_path, download_status, relevance_score, created_at, task_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     paper.id, paper.title, json.dumps(paper.authors), paper.abstract,
                     paper.doi, paper.url, paper.pdf_url, paper.source.value,
                     paper.published_date.isoformat() if paper.published_date else None,
                     paper.citation_count, paper.venue, paper.is_open_access,
-                    json.dumps(paper.topics), paper.local_pdf_path, paper.download_status,
+                    json.dumps(paper.topics), paper.paper_type, json.dumps(paper.subtopics),
+                    paper.learning_role, paper.difficulty, json.dumps(paper.method_tags),
+                    json.dumps(paper.quality_tags), paper.annotation_reason, paper.search_subtopic,
+                    paper.local_pdf_path, paper.download_status,
                     paper.relevance_score, paper.created_at.isoformat(), paper.task_id,
                 ),
             )
@@ -216,6 +257,9 @@ async def get_papers(
     search: str | None = None,
     download_status: str | None = None,
     source: str | None = None,
+    paper_type: str | None = None,
+    learning_role: str | None = None,
+    subtopic: str | None = None,
 ) -> tuple[list[Paper], int]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -240,6 +284,16 @@ async def get_papers(
         if source:
             conditions.append("source = ?")
             params.append(source)
+        if paper_type:
+            conditions.append("paper_type = ?")
+            params.append(paper_type)
+        if learning_role:
+            conditions.append("learning_role = ?")
+            params.append(learning_role)
+        if subtopic:
+            conditions.append("(subtopics LIKE ? OR search_subtopic LIKE ?)")
+            kw = f"%{subtopic}%"
+            params.extend([kw, kw])
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 

@@ -65,3 +65,10 @@ async def broadcast_agent_log(task_id: str, agent: str, log_line: str):
         "agent": agent,
         "content": log_line,
     })
+
+
+async def broadcast_search_graph_update(task_id: str, payload: dict):
+    await broadcast_to_task(task_id, {
+        "type": "search_graph_update",
+        **payload,
+    })

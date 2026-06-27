@@ -67,18 +67,41 @@ async def generate_search_plan(query: str) -> dict:
 
     body = {
         "model": settings.llm_model,
-        "max_tokens": 1024,
+        "max_tokens": 2048,
         "system": """你是一个学术搜索策略专家。根据用户的研究主题，生成精准的搜索方案。
 
 你必须返回纯 JSON，格式如下：
 {
+  "search_mode": "beginner_learning | authoritative_core | recent_sota | subtopic_deep_dive | broad_exploration",
+  "goal": "用户想通过这次检索完成的研究目标",
+  "domain": "英文领域名称",
   "core_concepts": ["核心概念1", "核心概念2"],
-  "field_terms": ["领域术语1", "领域术语2", ...],
+  "field_terms": ["领域术语1", "领域术语2"],
+  "exclude_terms": ["容易混淆但应排除的术语"],
+  "preferred_paper_types": ["survey", "foundation", "benchmark", "method", "system"],
+  "subtopics": [
+    {
+      "name": "子方向英文名",
+      "intent": "该子方向要找什么论文",
+      "required_terms": ["必须相关的术语"],
+      "optional_terms": ["同义词或相关术语"],
+      "queries": {
+        "arxiv": "arXiv 布尔查询",
+        "semantic_scholar": "自然语言查询",
+        "openalex": "简洁关键词查询",
+        "crossref": "简洁关键词查询"
+      }
+    }
+  ],
   "queries": {
-    "arxiv": "arXiv格式的布尔查询",
-    "semantic_scholar": "自然语言查询",
-    "openalex": "简洁关键词查询",
-    "crossref": "简洁关键词查询"
+    "arxiv": "兜底总查询",
+    "semantic_scholar": "兜底总查询",
+    "openalex": "兜底总查询",
+    "crossref": "兜底总查询"
+  },
+  "annotation_policy": {
+    "paper_types": ["survey", "benchmark", "dataset", "method", "system", "application", "theory"],
+    "learning_roles": ["field_overview", "foundation", "representative_method", "recent_frontier", "benchmark_or_dataset", "implementation_reference"]
   }
 }
 
@@ -89,10 +112,12 @@ async def generate_search_plan(query: str) -> dict:
   这些词不是核心概念的同义词，而是该领域论文必然会使用的术语
 
 规则：
-1. core_concepts 中的词必须出现在每个 queries 中
-2. arXiv 支持 AND/OR 布尔语法，其他用空格分隔
-3. field_terms 要尽量全面（5-10 个），覆盖该领域的不同表述
-4. 只返回 JSON，不要其他内容""",
+1. 如果主题很模糊或用户是新手，search_mode 优先 beginner_learning 或 broad_exploration，并覆盖综述、基础论文、代表方法、benchmark、近期前沿。
+2. 不要强迫每条 query 都包含缩写词；要覆盖同义表达、上位概念和代表系统名。
+3. 对有歧义的缩写必须给 exclude_terms，例如 VLA 要排除 radio astronomy / Very Large Array / telescope。
+4. subtopics 生成 4-7 个，每个子方向 query 要不同，避免重复搜索同一批标题。
+5. arXiv 支持 AND/OR 布尔语法，其他源用简洁自然语言关键词。
+6. 只返回 JSON，不要其他内容""",
         "messages": [
             {"role": "user", "content": f"研究主题：{query}"}
         ],
@@ -125,28 +150,84 @@ async def generate_search_plan(query: str) -> dict:
 
         plan = json.loads(content)
 
-        # 校验必要字段
-        if not plan.get("queries"):
-            return _fallback_plan(query)
-        if not plan.get("core_concepts"):
-            plan["core_concepts"] = query.split()[:3]
-
-        return plan
+        return _normalize_plan(plan, query)
 
     except Exception:
         return _fallback_plan(query)
 
 
+def _normalize_plan(plan: dict, query: str) -> dict:
+    """补齐新版搜索计划字段，同时兼容旧版 JSON。"""
+    if not isinstance(plan, dict):
+        return _fallback_plan(query)
+    if not plan.get("queries"):
+        plan["queries"] = {
+            "arxiv": query,
+            "semantic_scholar": query,
+            "openalex": query,
+            "crossref": query,
+        }
+    if not plan.get("core_concepts"):
+        plan["core_concepts"] = query.split()[:3]
+    plan.setdefault("search_mode", "broad_exploration")
+    plan.setdefault("goal", f"Search papers about {query}")
+    plan.setdefault("domain", query)
+    plan.setdefault("field_terms", [])
+    plan.setdefault("exclude_terms", [])
+    plan.setdefault("preferred_paper_types", ["survey", "foundation", "method", "benchmark"])
+    plan.setdefault("annotation_policy", {
+        "paper_types": ["survey", "benchmark", "dataset", "method", "system", "application", "theory"],
+        "learning_roles": [
+            "field_overview", "foundation", "representative_method",
+            "recent_frontier", "benchmark_or_dataset", "implementation_reference",
+        ],
+    })
+    if not plan.get("subtopics"):
+        plan["subtopics"] = [
+            {
+                "name": plan.get("domain") or query,
+                "intent": plan.get("goal") or f"Search papers about {query}",
+                "required_terms": plan.get("core_concepts", []),
+                "optional_terms": plan.get("field_terms", []),
+                "queries": plan["queries"],
+            }
+        ]
+    return plan
+
+
 def _fallback_plan(query: str) -> dict:
     """LLM 调用失败时的兜底方案"""
     return {
+        "search_mode": "broad_exploration",
+        "goal": f"Search papers about {query}",
+        "domain": query,
         "core_concepts": query.split()[:3],
         "field_terms": [],
+        "exclude_terms": [],
+        "preferred_paper_types": ["survey", "foundation", "method", "benchmark"],
+        "subtopics": [
+            {
+                "name": query,
+                "intent": "Broad exploration",
+                "required_terms": query.split()[:3],
+                "optional_terms": [],
+                "queries": {
+                    "arxiv": query,
+                    "semantic_scholar": query,
+                    "openalex": query,
+                    "crossref": query,
+                },
+            }
+        ],
         "queries": {
             "arxiv": query,
             "semantic_scholar": query,
             "openalex": query,
             "crossref": query,
+        },
+        "annotation_policy": {
+            "paper_types": ["survey", "benchmark", "dataset", "method", "system", "application", "theory"],
+            "learning_roles": ["field_overview", "foundation", "representative_method", "recent_frontier"],
         },
     }
 

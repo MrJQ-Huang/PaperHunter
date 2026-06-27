@@ -19,6 +19,12 @@ async def llm_score_papers(
         "relevance": int,       # 0-10
         "is_relevant": bool,    # 是否与主题直接相关
         "reason": str,          # 一句话理由
+        "paper_type": str,
+        "learning_role": str,
+        "difficulty": str,
+        "subtopics": list[str],
+        "method_tags": list[str],
+        "quality_tags": list[str],
     }
     """
     results = []
@@ -54,7 +60,7 @@ async def _score_batch(query: str, papers: list[Paper]) -> list[dict]:
 
     body = {
         "model": settings.llm_model,
-        "max_tokens": 1024,
+        "max_tokens": 2048,
         "system": """你是一个学术论文评审专家。你需要严格评估每篇论文是否与用户的研究主题直接相关。
 
 评分标准：
@@ -66,11 +72,19 @@ async def _score_batch(query: str, papers: list[Paper]) -> list[dict]:
 
 重要：如果论文与研究主题没有直接关联，即使它在其他方面很优秀，也必须给低分。
 
+同时请给论文做入库标注，便于用户筛选和学习路径构建。
+
 返回 JSON 数组，每个元素包含:
 - id: 论文 ID（原样返回）
 - relevance: 0-10 的整数
 - is_relevant: true（relevance>=5）或 false（relevance<5）
 - reason: 一句话说明评分理由（15字以内）
+- paper_type: survey | benchmark | dataset | method | system | application | theory | unknown
+- learning_role: field_overview | foundation | representative_method | recent_frontier | benchmark_or_dataset | implementation_reference | niche_detail
+- difficulty: beginner | intermediate | advanced
+- subtopics: 1-3 个英文子方向标签
+- method_tags: 1-5 个英文方法/技术标签
+- quality_tags: 0-4 个质量标签，如 highly_cited, top_venue, open_access, benchmark, open_source, recent
 
 只返回 JSON 数组，不要其他内容。""",
         "messages": [
@@ -99,6 +113,12 @@ async def _score_batch(query: str, papers: list[Paper]) -> list[dict]:
                             "relevance": 5,
                             "is_relevant": True,
                             "reason": "LLM评分失败，默认通过",
+                            "paper_type": "unknown",
+                            "learning_role": "niche_detail",
+                            "difficulty": "intermediate",
+                            "subtopics": p.subtopics,
+                            "method_tags": [],
+                            "quality_tags": [],
                         }
                         for p in papers
                     ]
@@ -132,6 +152,12 @@ async def _score_batch(query: str, papers: list[Paper]) -> list[dict]:
                         "relevance": min(10, max(0, int(item.get("relevance", 5)))),
                         "is_relevant": bool(item.get("is_relevant", True)),
                         "reason": str(item.get("reason", "")),
+                        "paper_type": str(item.get("paper_type", "unknown")),
+                        "learning_role": str(item.get("learning_role", "niche_detail")),
+                        "difficulty": str(item.get("difficulty", "intermediate")),
+                        "subtopics": _as_str_list(item.get("subtopics", []))[:3],
+                        "method_tags": _as_str_list(item.get("method_tags", []))[:5],
+                        "quality_tags": _as_str_list(item.get("quality_tags", []))[:4],
                     }
                 )
 
@@ -145,6 +171,12 @@ async def _score_batch(query: str, papers: list[Paper]) -> list[dict]:
                         "relevance": 5,
                         "is_relevant": True,
                         "reason": "未获评分",
+                        "paper_type": "unknown",
+                        "learning_role": "niche_detail",
+                        "difficulty": "intermediate",
+                        "subtopics": p.subtopics,
+                        "method_tags": [],
+                        "quality_tags": [],
                     }
                 )
 
@@ -158,6 +190,20 @@ async def _score_batch(query: str, papers: list[Paper]) -> list[dict]:
                 "relevance": 5,
                 "is_relevant": True,
                 "reason": "评分解析失败",
+                "paper_type": "unknown",
+                "learning_role": "niche_detail",
+                "difficulty": "intermediate",
+                "subtopics": p.subtopics,
+                "method_tags": [],
+                "quality_tags": [],
             }
             for p in papers
         ]
+
+
+def _as_str_list(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []

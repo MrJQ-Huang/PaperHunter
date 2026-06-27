@@ -19,6 +19,33 @@ const sourceColors: Record<string, string> = {
   google_scholar: 'bg-yellow-50 text-yellow-600',
 }
 
+const roleLabels: Record<string, string> = {
+  field_overview: '入门综述',
+  foundation: '基础必读',
+  representative_method: '代表方法',
+  recent_frontier: '前沿',
+  benchmark_or_dataset: 'Benchmark',
+  implementation_reference: '实现参考',
+  niche_detail: '细分参考',
+}
+
+const typeLabels: Record<string, string> = {
+  survey: '综述',
+  benchmark: 'Benchmark',
+  dataset: '数据集',
+  method: '方法',
+  system: '系统',
+  application: '应用',
+  theory: '理论',
+  unknown: '未分类',
+}
+
+const asStringList = (value: unknown): string[] => {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean)
+  if (typeof value === 'string' && value.trim()) return [value.trim()]
+  return []
+}
+
 export default function PaperCard({ paper, onDownload, onEdit, onDelete, selected, onToggleSelect }: Props) {
   const [copied, setCopied] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -109,10 +136,36 @@ export default function PaperCard({ paper, onDownload, onEdit, onDelete, selecte
             评分: {paper.relevance_score.toFixed(1)}
           </span>
         )}
+        {paper.paper_type && (
+          <span className="text-xs bg-slate-50 text-slate-600 px-2 py-0.5 rounded">
+            {typeLabels[paper.paper_type] || paper.paper_type}
+          </span>
+        )}
+        {paper.learning_role && (
+          <span className="text-xs bg-amber-50 text-amber-700 px-2 py-0.5 rounded">
+            {roleLabels[paper.learning_role] || paper.learning_role}
+          </span>
+        )}
       </div>
+
+      {(asStringList(paper.subtopics).length > 0 || asStringList(paper.method_tags).length > 0 || asStringList(paper.quality_tags).length > 0) && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {[...asStringList(paper.subtopics), ...asStringList(paper.method_tags), ...asStringList(paper.quality_tags)].slice(0, 6).map((tag) => (
+            <span key={tag} className="text-[10px] text-gray-500 bg-gray-50 px-1.5 py-0.5 rounded">
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* 摘要 */}
       <p className="text-xs text-gray-600 line-clamp-3 mb-3">{paper.abstract}</p>
+
+      {paper.annotation_reason && (
+        <p className="text-[11px] text-gray-500 bg-gray-50 rounded-lg px-2 py-1.5 mb-3 line-clamp-2">
+          {paper.annotation_reason}
+        </p>
+      )}
 
       {/* 操作按钮 */}
       <div className="flex items-center gap-2">

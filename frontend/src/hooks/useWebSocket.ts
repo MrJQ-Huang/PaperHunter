@@ -10,6 +10,7 @@ export function useWebSocket(taskId: string | null) {
   const updateAgent = useAgentStore((s) => s.updateAgent)
   const appendAgentLog = useAgentStore((s) => s.appendAgentLog)
   const setAgentCollapsed = useAgentStore((s) => s.setAgentCollapsed)
+  const updateSearchGraph = useAgentStore((s) => s.updateSearchGraph)
   const addMessage = usePaperStore((s) => s.addMessage)
 
   const connect = useCallback(() => {
@@ -55,6 +56,10 @@ export function useWebSocket(taskId: string | null) {
           appendAgentLog(data.agent, data.content || '')
         }
 
+        if (data.type === 'search_graph_update') {
+          updateSearchGraph(data as any)
+        }
+
         if (data.type === 'chat' && taskId && data.from !== 'user') {
           addMessage(taskId, data)
         }
@@ -76,7 +81,7 @@ export function useWebSocket(taskId: string | null) {
     ws.onerror = () => {
       ws.close()
     }
-  }, [taskId, updateAgent, addMessage, appendAgentLog, setAgentCollapsed])
+  }, [taskId, updateAgent, addMessage, appendAgentLog, setAgentCollapsed, updateSearchGraph])
 
   const startHeartbeat = (ws: WebSocket) => {
     const interval = setInterval(() => {

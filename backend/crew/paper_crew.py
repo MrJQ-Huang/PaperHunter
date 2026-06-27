@@ -29,8 +29,9 @@ from ..utils.dedup import deduplicate
 from ..database import (
     insert_task, update_task, insert_papers, insert_message,
     get_paper, update_paper_download, update_task_download_stats,
+    update_paper,
 )
-from ..api.websocket import broadcast_agent_status, broadcast_agent_log
+from ..api.websocket import broadcast_agent_status, broadcast_agent_log, broadcast_search_graph_update
 from ..config import settings
 
 
@@ -76,10 +77,20 @@ class PaperCrew:
                 await update_task(self.task)
                 return
 
+            # 自动语义排序与标签标注，入库后即可按综述/基础/子方向筛选。
+            await self._notify("filter", "working", "正在语义排序并标注论文...")
+            await self._graph_update({"phase": "indexing", "status": "indexing", "message": "正在语义排序并标注论文"})
+            papers = await self._filter_phase(papers)
+            self.task.papers_after_filter = len(papers)
+            await update_task(self.task)
+            await self._notify("filter", "done", f"标注完成，保留 {len(papers)} 篇论文", 100)
+            await self._graph_update({"phase": "indexing", "status": "done", "indexed_count": len(papers), "message": "论文标注完成"})
+
             # 保存到数据库
             for p in papers:
                 p.task_id = self.task.id
             await insert_papers(papers)
+            await self._graph_update({"phase": "reviewing", "status": "done", "indexed_count": len(papers), "message": "论文已入库，可以开始筛选"})
 
             # 搜索完成，进入 reviewing 状态等待用户操作
             self.task.status = TaskStatus.REVIEWING
@@ -89,6 +100,7 @@ class PaperCrew:
                 f"请前往论文库筛选需要下载的论文，或让 Agent 帮你智能筛选。",
                 suggestions=["前往论文库筛选", "让 Agent 帮我筛选", "一键全部下载"],
             )
+            await self._graph_update({"phase": "completed", "status": "done", "message": "搜索任务完成"})
 
         except Exception as e:
             self.task.status = TaskStatus.FAILED
@@ -151,21 +163,42 @@ class PaperCrew:
             translated = original_query
             await self._log("search", f"✓ 检索词已是英文，跳过翻译: {translated}")
 
-        # LLM 生成结构化搜索方案
+        # LLM 生成结构化搜索方案；如果用户已确认过方案，优先使用完整 research_intent。
         await self._notify("search", "working", "正在制定搜索策略...")
         await self._log("search", "正在分析研究意图，制定搜索策略...")
-        search_plan = await generate_search_plan(translated)
+        search_plan = (
+            self.task.filters.get("_research_intent")
+            or self.task.search_plan
+            or await generate_search_plan(translated)
+        )
 
         core_concepts = search_plan.get("core_concepts", [])
-        source_queries = search_plan.get("queries", {})
         field_terms = search_plan.get("field_terms", [])
+        exclude_terms = search_plan.get("exclude_terms", [])
+        subtopics = search_plan.get("subtopics") or []
 
         if core_concepts:
             await self._log("search", f"✓ 核心概念: {', '.join(core_concepts)}")
         if field_terms:
             await self._log("search", f"✓ 领域术语: {', '.join(field_terms[:5])}")
 
-        await self._send_chat(f"搜索策略已制定，核心概念: {', '.join(core_concepts) if core_concepts else translated}")
+        if subtopics:
+            await self._log("search", f"✓ 子方向: {', '.join([s.get('name', '') for s in subtopics[:6] if s.get('name')])}")
+        if exclude_terms:
+            await self._log("search", f"✓ 排除歧义: {', '.join(exclude_terms[:6])}")
+
+        await self._send_chat(
+            f"搜索策略已制定：{search_plan.get('goal') or translated}\n"
+            f"将按 {len(subtopics) or 1} 个子方向多路召回。"
+        )
+        await self._graph_update({
+            "phase": "planning",
+            "status": "done",
+            "domain": search_plan.get("domain") or self.task.query,
+            "goal": search_plan.get("goal") or translated,
+            "subtopics": [{"name": s.get("name"), "intent": s.get("intent")} for s in subtopics if s.get("name")],
+            "message": "检索图谱已生成",
+        })
 
         # ===== 第一层：关键词搜索 =====
         await self._notify("search", "working", "第一层：关键词搜索...")
@@ -186,32 +219,111 @@ class PaperCrew:
             PaperSource.GOOGLE_SCHOLAR: "google_scholar",
         }
 
-        default_query = translated
         search_funcs = []
         search_meta = []
+        seen_jobs = set()
+
+        def add_job(source: PaperSource, query_text: str, subtopic_name: str):
+            query_text = (query_text or "").strip()
+            if not query_text:
+                return
+            key = (source.value, query_text.lower(), subtopic_name.lower())
+            if key in seen_jobs:
+                return
+            seen_jobs.add(key)
+            search_funcs.append(source_map[source](query_text))
+            search_meta.append((source, query_text, subtopic_name))
+
+        fallback_queries = search_plan.get("queries", {})
+        if not subtopics:
+            subtopics = [{
+                "name": search_plan.get("domain") or translated,
+                "intent": search_plan.get("goal") or translated,
+                "queries": fallback_queries,
+            }]
+
+        for subtopic in subtopics[:7]:
+            subtopic_name = subtopic.get("name") or search_plan.get("domain") or translated
+            subtopic_queries = subtopic.get("queries") or fallback_queries
+            for source in sources:
+                if source in source_map:
+                    source_key = source_name_map.get(source, "")
+                    q = subtopic_queries.get(source_key) or fallback_queries.get(source_key) or translated
+                    add_job(source, q, subtopic_name)
+
+        # 兜底总查询，避免子方向 query 生成失败时无召回。
         for source in sources:
             if source in source_map:
-                q = source_queries.get(source_name_map.get(source, ""), default_query)
-                search_funcs.append(source_map[source](q))
-                search_meta.append((source, q))
+                source_key = source_name_map.get(source, "")
+                add_job(source, fallback_queries.get(source_key, translated), "general")
+
+        for source, query_used, subtopic_name in search_meta:
+            await self._graph_update({
+                "phase": "searching",
+                "status": "searching",
+                "subtopic": subtopic_name,
+                "source": source.value,
+                "query": query_used,
+                "message": f"{subtopic_name} / {source.value} 正在检索",
+            })
 
         results = await asyncio.gather(*search_funcs, return_exceptions=True)
 
         all_papers = []
+        branch_counts: dict[str, int] = {}
         for i, result in enumerate(results):
-            source_name, query_used = search_meta[i]
+            source_name, query_used, subtopic_name = search_meta[i]
             if isinstance(result, Exception):
                 await self._log("search", f"✗ {source_name.value} 搜索失败: {str(result)}")
+                await self._graph_update({
+                    "phase": "searching",
+                    "status": "error",
+                    "subtopic": subtopic_name,
+                    "source": source_name.value,
+                    "message": str(result),
+                })
             else:
+                for paper in result:
+                    paper.search_subtopic = subtopic_name
+                    if subtopic_name and subtopic_name not in paper.subtopics:
+                        paper.subtopics.append(subtopic_name)
                 all_papers.extend(result)
-                await self._log("search", f"✓ {source_name.value}: 找到 {len(result)} 篇论文")
+                branch_counts[subtopic_name] = branch_counts.get(subtopic_name, 0) + len(result)
+                await self._log("search", f"✓ {source_name.value} / {subtopic_name}: 找到 {len(result)} 篇论文")
+                await self._graph_update({
+                    "phase": "searching",
+                    "status": "found",
+                    "subtopic": subtopic_name,
+                    "source": source_name.value,
+                    "found_count": len(result),
+                    "branch_found_count": branch_counts[subtopic_name],
+                    "latest_papers": [self._paper_brief(p) for p in result[:5]],
+                    "message": f"{subtopic_name} / {source_name.value} 找到 {len(result)} 篇",
+                })
 
         layer1_count = len(all_papers)
         await self._log("search", f"第一层完成，收集 {layer1_count} 篇论文")
 
+        if exclude_terms:
+            before = len(all_papers)
+            excluded = [t.lower() for t in exclude_terms if t]
+            kept = []
+            for paper in all_papers:
+                text = f"{paper.title} {paper.abstract} {paper.venue or ''}".lower()
+                if not any(term in text for term in excluded):
+                    kept.append(paper)
+            all_papers = kept
+            await self._log("search", f"歧义排除: {before} → {len(all_papers)}")
+
         # 去重
         deduplicated = deduplicate(all_papers)
         await self._log("search", f"去重后剩余 {len(deduplicated)} 篇")
+        await self._graph_update({
+            "phase": "dedup",
+            "status": "done",
+            "found_count": len(deduplicated),
+            "message": f"去重后剩余 {len(deduplicated)} 篇",
+        })
 
         # ===== 第二层：引用链补充 =====
         # 从第一层结果中找高被引论文，获取其 references（基础性工作）
@@ -260,10 +372,17 @@ class PaperCrew:
         layer2_total = len(deduplicated)
         await self._log("search", f"✓ 搜索完成，共 {layer2_total} 篇论文（关键词 {layer1_count} + 引用链补充 {layer2_total - layer1_count}）")
         await self._send_chat(f"搜索完成：关键词 {layer1_count} 篇 + 引用链补充 {layer2_total - layer1_count} 篇 = 共 {layer2_total} 篇")
+        await self._graph_update({
+            "phase": "searching",
+            "status": "done",
+            "found_count": layer2_total,
+            "message": "多分支检索完成",
+        })
 
         # 保存核心概念到 task.filters，供 filter 阶段使用
         if core_concepts:
             self.task.filters["_core_concepts"] = core_concepts
+        self.task.filters["_research_intent"] = search_plan
 
         return deduplicated
 
@@ -296,7 +415,7 @@ class PaperCrew:
             filtered = [p for p in filtered if p.is_open_access]
             await self._log("filter", f"  OA过滤: {before} → {len(filtered)}")
 
-        # 关键词硬匹配：标题/摘要必须包含至少一个核心概念
+        # 关键词软匹配：命中核心概念的论文获得轻微排序优势，不再硬删除，避免误伤标题不含缩写的基础论文。
         core_concepts = filters.get("_core_concepts", [])
         if not core_concepts:
             # 兜底：用查询词本身
@@ -305,16 +424,17 @@ class PaperCrew:
         if core_concepts:
             core_lower = [c.lower() for c in core_concepts]
             before = len(filtered)
-            keyword_matched = []
+            keyword_matched = set()
             for p in filtered:
                 title_lower = p.title.lower()
                 abstract_lower = (p.abstract or "").lower()
                 if any(c in title_lower or c in abstract_lower for c in core_lower):
-                    keyword_matched.append(p)
-            # 如果关键词过滤后还有论文，用过滤结果；否则回退（避免误杀）
+                    keyword_matched.add(p.id)
             if keyword_matched:
-                filtered = keyword_matched
-                await self._log("filter", f"  关键词匹配: {before} → {len(filtered)}")
+                for p in filtered:
+                    if p.id in keyword_matched:
+                        p.relevance_score = (p.relevance_score or 0) + 0.5
+                await self._log("filter", f"  关键词软命中: {len(keyword_matched)} / {before}")
 
         # 规则评分（用于排序，不用于截断）
         max_citations = max((p.citation_count or 0) for p in filtered) if filtered else 1
@@ -367,7 +487,9 @@ class PaperCrew:
             await self._notify("filter", "working", "正在进行 LLM 语义评分...")
             await self._log("filter", f"第二阶段：LLM 语义评分（{len(filtered)} 篇）...")
 
-            llm_scores = await llm_score_papers(self.task.query, filtered)
+            intent = filters.get("_research_intent") or self.task.search_plan or {"query": self.task.query}
+            scoring_query = json.dumps(intent, ensure_ascii=False) if isinstance(intent, dict) else self.task.query
+            llm_scores = await llm_score_papers(scoring_query, filtered)
 
             # 合并 LLM 评分到论文
             score_map = {s["paper_id"]: s for s in llm_scores}
@@ -380,14 +502,23 @@ class PaperCrew:
                     paper.relevance_score = round(rule_score * 0.4 + llm_score * 0.6, 2)
                     paper._llm_relevant = llm_result.get("is_relevant", True)
                     paper._llm_reason = llm_result.get("reason", "")
+                    paper.paper_type = llm_result.get("paper_type") or paper.paper_type
+                    paper.learning_role = llm_result.get("learning_role") or paper.learning_role
+                    paper.difficulty = llm_result.get("difficulty") or paper.difficulty
+                    paper.annotation_reason = llm_result.get("reason") or paper.annotation_reason
+                    for subtopic in llm_result.get("subtopics", []):
+                        if subtopic and subtopic not in paper.subtopics:
+                            paper.subtopics.append(subtopic)
+                    paper.method_tags = llm_result.get("method_tags", []) or paper.method_tags
+                    paper.quality_tags = llm_result.get("quality_tags", []) or paper.quality_tags
                 else:
                     paper._llm_relevant = True
                     paper._llm_reason = ""
 
-            # 丢弃 LLM 判定为无关的论文
+            # 不在这里丢弃论文；低相关论文保留低分，便于用户审查和手动筛选。
             before = len(filtered)
-            filtered = [p for p in filtered if getattr(p, "_llm_relevant", True)]
-            await self._log("filter", f"  LLM 无关判定丢弃: {before} → {len(filtered)}")
+            irrelevant = len([p for p in filtered if not getattr(p, "_llm_relevant", True)])
+            await self._log("filter", f"  LLM 低相关标记: {irrelevant} / {before}")
 
             # 按综合评分重排
             filtered.sort(key=lambda p: p.relevance_score or 0, reverse=True)
@@ -398,11 +529,62 @@ class PaperCrew:
                 if reason:
                     await self._log("filter", f"  ★ {p.title[:50]}... — {reason}")
 
+        for paper in filtered:
+            self._apply_fallback_annotation(paper)
+
         # 更新数据库中的评分
         for paper in filtered:
             await update_paper_download(paper.id, paper.local_pdf_path or "", paper.download_status)
+            await update_paper(
+                paper.id,
+                relevance_score=paper.relevance_score,
+                paper_type=paper.paper_type,
+                subtopics=json.dumps(paper.subtopics, ensure_ascii=False),
+                learning_role=paper.learning_role,
+                difficulty=paper.difficulty,
+                method_tags=json.dumps(paper.method_tags, ensure_ascii=False),
+                quality_tags=json.dumps(paper.quality_tags, ensure_ascii=False),
+                annotation_reason=paper.annotation_reason,
+                search_subtopic=paper.search_subtopic,
+            )
 
         return filtered
+
+    def _apply_fallback_annotation(self, paper: Paper):
+        """LLM 未返回标签时，用标题/摘要/元数据补一层基础标注。"""
+        text = f"{paper.title} {paper.abstract} {paper.venue or ''}".lower()
+        if not paper.paper_type:
+            if any(w in text for w in ["survey", "review", "overview"]):
+                paper.paper_type = "survey"
+            elif any(w in text for w in ["benchmark", "evaluation suite"]):
+                paper.paper_type = "benchmark"
+            elif any(w in text for w in ["dataset", "corpus"]):
+                paper.paper_type = "dataset"
+            elif any(w in text for w in ["system", "framework", "platform"]):
+                paper.paper_type = "system"
+            else:
+                paper.paper_type = "method"
+        if not paper.learning_role:
+            if paper.paper_type == "survey":
+                paper.learning_role = "field_overview"
+            elif paper.paper_type in ("benchmark", "dataset"):
+                paper.learning_role = "benchmark_or_dataset"
+            elif (paper.citation_count or 0) >= 200:
+                paper.learning_role = "foundation"
+            else:
+                paper.learning_role = "representative_method"
+        if not paper.difficulty:
+            paper.difficulty = "beginner" if paper.learning_role in ("field_overview", "foundation") else "intermediate"
+        if paper.is_open_access and "open_access" not in paper.quality_tags:
+            paper.quality_tags.append("open_access")
+        if (paper.citation_count or 0) >= 200 and "highly_cited" not in paper.quality_tags:
+            paper.quality_tags.append("highly_cited")
+        if paper.published_date:
+            pub_date = paper.published_date.replace(tzinfo=None) if paper.published_date.tzinfo else paper.published_date
+            if (datetime.now() - pub_date).days <= 365 * 3 and "recent" not in paper.quality_tags:
+                paper.quality_tags.append("recent")
+        if not paper.annotation_reason:
+            paper.annotation_reason = "基于标题、摘要和元数据自动标注"
 
     async def _download_phase(self, papers: list[Paper]) -> dict:
         """批量下载 PDF"""
@@ -487,3 +669,19 @@ class PaperCrew:
             })
         except Exception:
             pass
+
+    async def _graph_update(self, payload: dict):
+        try:
+            await broadcast_search_graph_update(self.task.id, payload)
+        except Exception:
+            pass
+
+    def _paper_brief(self, paper: Paper) -> dict:
+        year = paper.published_date.year if paper.published_date else None
+        return {
+            "id": paper.id,
+            "title": paper.title,
+            "year": year,
+            "source": paper.source.value,
+            "subtopic": paper.search_subtopic,
+        }

@@ -80,12 +80,13 @@ export function useChat(
             timestamp: reply.timestamp,
             suggestions: reply.suggestions,
           })
+          await refreshTask(taskId)
         }
       } catch {} finally {
         setIsLoading(false)
       }
     },
-    [taskId, addMessage]
+    [taskId, addMessage, refreshTask]
   )
 
   // 无任务时创建任务并发送首条消息

@@ -8,6 +8,7 @@ import aiohttp
 
 from ..models.message import Message, MessageRole
 from ..models.task import Task, TaskStatus
+from ..models.paper import PaperSource
 from ..database import insert_message, get_messages, get_task, update_task
 from ..config import settings
 
@@ -21,6 +22,11 @@ _START_KEYWORDS = [
     "可以搜了", "可以开始", "可以了", "就这样搜",
     "go", "start", "开始执行", "启动搜索", "启动吧",
     "就这样", "就这些", "没问题了", "开搜",
+    "开始查", "开始找", "执行搜索", "执行检索", "启动检索",
+    "进入检索", "进入搜索", "开始运行", "运行吧",
+    "启动agent", "启动 agent", "启动工作流", "开始工作流",
+    "下发任务", "下发检索", "按这个方案搜", "按这个方案检索",
+    "继续检索", "继续搜索",
 ]
 
 
@@ -31,18 +37,137 @@ class SendMessageRequest(BaseModel):
 
 def _detect_start_intent(text: str) -> bool:
     """检测用户是否有"开始搜索"的意图
-    只对短消息（<15字）做关键词匹配，长消息视为需求描述，不触发"""
+    对较短的确认句和包含明确执行动词的长句生效，避免把需求描述误判为启动。"""
     text_clean = text.strip()
     text_lower = text_clean.lower()
 
-    # 长消息（超过15个字）视为需求描述，不触发
-    if len(text_clean) > 15:
+    if not text_clean:
+        return False
+
+    negative_markers = ["不要开始", "先别开始", "暂不开始", "不要搜", "先别搜", "别启动", "不要启动"]
+    if any(marker in text_lower for marker in negative_markers):
         return False
 
     for kw in _START_KEYWORDS:
         if kw in text_lower:
             return True
+
+    # 允许自然语言确认，例如“方案可以，直接开始检索论文吧”。
+    if len(text_clean) <= 80:
+        has_confirm = any(w in text_lower for w in ["确认", "可以", "没问题", "就这样", "按这个", "同意", "ok"])
+        has_action = any(w in text_lower for w in ["开始", "启动", "执行", "检索", "搜索", "运行", "下发"])
+        if has_confirm and has_action:
+            return True
+
     return False
+
+
+def _detect_progress_intent(text: str) -> bool:
+    cleaned = re.sub(r"[\s？！?!。,.，~～]", "", text.strip().lower())
+    return cleaned in {"查看进度", "进度", "看进度", "当前进度", "任务进度"}
+
+
+def _is_greeting_or_control(text: str) -> bool:
+    """过滤不应作为检索主题的短消息。"""
+    cleaned = re.sub(r"[\s？！?!。,.，~～]", "", text.strip().lower())
+    if not cleaned:
+        return True
+    greetings = {"你好", "您好", "hi", "hello", "hey", "在吗"}
+    if cleaned in greetings:
+        return True
+    if _detect_start_intent(text):
+        return True
+    quick_options = [
+        "搜索最新3年的研究", "只要高引用论文", "全面搜索", "不限条件",
+        "只看oa论文", "只看开放获取", "查看进度",
+    ]
+    return any(opt in text.lower() for opt in quick_options)
+
+
+def _conversation_research_text(history: list[Message]) -> str:
+    """从对话历史中提取真实研究需求，避免使用首次问候作为任务 query。"""
+    user_texts = [
+        m.content.strip()
+        for m in history
+        if m.role == MessageRole.USER and not _is_greeting_or_control(m.content)
+    ]
+    if not user_texts:
+        return ""
+    return "\n".join(user_texts[-8:])
+
+
+def _embodied_brain_trace_plan(research_text: str) -> dict | None:
+    """对当前高频需求给出确定性三分支方案，避免 LLM 失败时退回问候语。"""
+    text = research_text.lower()
+    has_embodied = any(k in research_text for k in ["具身", "机器人", "大脑"]) or "embodied" in text
+    has_vla = "vla" in text or "视觉" in research_text or "vision-language-action" in text
+    has_world_model = "世界模型" in research_text or "world model" in text
+    has_hierarchy = any(k in research_text for k in ["分层", "层级", "长时域", "任务规划", "tamp"]) or "hierarchical" in text
+    if not (has_embodied and (has_vla or has_world_model or has_hierarchy)):
+        return None
+
+    return {
+        "query": "embodied AI brain vision language action world models hierarchical decision making robotics",
+        "task_title": "具身智能大脑三类方法论文溯源",
+        "search_mode": "subtopic_deep_dive",
+        "goal": "追溯具身智能大脑中 VLA、世界模型、分层决策框架三类方法的起源、基础工作、经典里程碑和最新英文论文",
+        "domain": "Embodied AI brain architectures",
+        "clarifying_questions": [],
+        "sources": ["arxiv", "semantic_scholar", "openalex", "crossref"],
+        "filters": {},
+        "core_concepts": ["embodied AI", "robotics", "agent architecture"],
+        "field_terms": [
+            "robot learning", "foundation models", "planning", "control",
+            "manipulation", "long-horizon tasks", "policy learning",
+        ],
+        "exclude_terms": ["Very Large Array", "radio astronomy", "telescope"],
+        "preferred_paper_types": ["survey", "foundation", "benchmark", "method", "system"],
+        "subtopics": [
+            {
+                "name": "Vision-Language-Action Models",
+                "intent": "VLA 在机器人中的起源、基础模型、端到端动作生成和代表系统",
+                "required_terms": ["vision language action", "robotics"],
+                "optional_terms": ["VLA", "embodied AI", "robot manipulation", "RT-1", "RT-2", "OpenVLA", "PaLM-E"],
+                "queries": {
+                    "arxiv": '(("vision language action" OR VLA OR "vision-language-action" OR "robot foundation model") AND (robot OR robotics OR manipulation))',
+                    "semantic_scholar": "vision language action models robotics RT-1 RT-2 OpenVLA PaLM-E embodied AI",
+                    "openalex": "vision language action robotics embodied AI robot foundation model",
+                    "crossref": "vision language action robotics embodied AI robot foundation model",
+                },
+            },
+            {
+                "name": "World Models for Robotics",
+                "intent": "世界模型在智能体和机器人中的动力学表征、预测、规划与决策溯源",
+                "required_terms": ["world model", "robotics"],
+                "optional_terms": ["model-based reinforcement learning", "latent dynamics", "planning", "Dreamer", "MuZero"],
+                "queries": {
+                    "arxiv": '(("world model" OR "latent dynamics" OR "model-based reinforcement learning") AND (robot OR robotics OR embodied OR planning))',
+                    "semantic_scholar": "world models robotics model-based reinforcement learning latent dynamics planning embodied agents",
+                    "openalex": "world models robotics model based reinforcement learning planning embodied agents",
+                    "crossref": "world models robotics model based reinforcement learning planning embodied agents",
+                },
+            },
+            {
+                "name": "Hierarchical Decision Making and TAMP",
+                "intent": "分层决策、任务与运动规划、长时域动作规划在机器人中的经典框架和学习结合方法",
+                "required_terms": ["hierarchical decision making", "robotics"],
+                "optional_terms": ["task and motion planning", "TAMP", "long-horizon planning", "hierarchical reinforcement learning"],
+                "queries": {
+                    "arxiv": '(("hierarchical decision making" OR "task and motion planning" OR TAMP OR "long-horizon planning") AND (robot OR robotics OR embodied))',
+                    "semantic_scholar": "hierarchical decision making task and motion planning TAMP long-horizon robot planning",
+                    "openalex": "hierarchical decision making task motion planning TAMP robotics long horizon planning",
+                    "crossref": "hierarchical decision making task motion planning TAMP robotics long horizon planning",
+                },
+            },
+        ],
+        "queries": {
+            "arxiv": '("embodied AI" AND (robot OR robotics) AND ("vision language action" OR "world model" OR "task and motion planning" OR TAMP))',
+            "semantic_scholar": "embodied AI robotics VLA world models hierarchical decision making task and motion planning",
+            "openalex": "embodied AI robotics vision language action world models hierarchical decision making",
+            "crossref": "embodied AI robotics vision language action world models hierarchical decision making",
+        },
+        "summary": "按 VLA、世界模型、分层决策/TAMP 三个分支做英文论文溯源，覆盖奠基论文、经典进展和最新代表工作。",
+    }
 
 
 @router.get("/messages/{task_id}")
@@ -81,6 +206,10 @@ async def agent_reply(task_id: str):
     user_msgs = [m for m in history if m.role == MessageRole.USER]
     latest_user_msg = user_msgs[-1].content if user_msgs else ""
 
+    # “查看进度”是状态查询，不允许在 pending 状态下触发检索工作流。
+    if _detect_progress_intent(latest_user_msg):
+        return await _progress_reply(task)
+
     # 如果用户表达了"开始搜索"意图且任务处于待确认状态，直接触发工作流
     if task.status in (TaskStatus.PENDING, TaskStatus.PAUSED) and _detect_start_intent(latest_user_msg):
         return await _trigger_workflow(task)
@@ -100,13 +229,18 @@ async def agent_reply(task_id: str):
 
 你的职责：
 1. 理解用户的研究需求，用专业学术语言复述和分析
-2. 建议搜索策略（时间范围、文献类型、子方向等）
-3. 引导用户确认搜索方案
+2. 主动追问用户尚未说明但会显著影响检索质量的信息
+3. 建议搜索策略（时间范围、文献类型、子方向等）
+4. 引导用户确认搜索方案
 
 重要规则：
 - 你只负责讨论和分析，不要自己执行搜索、不要编造论文列表、不要模拟搜索结果
 - 当用户说"开始搜索"之类的话时，回复"好的，正在启动搜索流程！"并加上 [READY] 标记
 - 不要输出关键词列表或搜索方案的结构化内容，这些由系统自动生成
+- 任务未启动时，不要建议"查看进度"；如果方案已足够清晰，建议用户说"开始检索"
+- 如果用户只给出缩写、宽泛领域或一句很模糊的话，要主动问 2-3 个最关键澄清问题
+- 如果用户是新手或表达"入门/了解/学习/权威/基础论文"，要建议新手学习模式：综述、基础论文、代表方法、benchmark、近期前沿
+- 对容易歧义的缩写要提醒确认领域，例如 VLA 可能是 Vision-Language-Action 也可能是 Very Large Array
 - 简洁专业，中文回复，150字以内
 
 回复格式（严格遵守）：
@@ -127,33 +261,9 @@ async def agent_reply(task_id: str):
         suggestions = ["重试", "直接开始搜索"]
 
     # 如果 LLM 回复中包含 [READY]，也触发工作流
-    if "[READY]" in reply_content or _detect_start_intent(reply_content):
+    if "[READY]" in reply_content:
         reply_content = re.sub(r'\[READY\]', '', reply_content).strip()
-
-        # 如果有搜索方案，用方案中的 query
-        from .tasks import _running_crews, _run_crew
-        from ..crew.paper_crew import PaperCrew
-        if task.search_plan and task.search_plan.get("query"):
-            task.query = task.search_plan["query"]
-            await update_task(task)
-
-        reply_msg = Message(
-            id=str(uuid.uuid4()),
-            task_id=task_id,
-            role=MessageRole.AGENT,
-            content=reply_content or f"好的，以「{task.query}」为主题启动搜索！",
-            suggestions=["查看进度"],
-            timestamp=datetime.now(),
-            agent_name="Chat Agent",
-        )
-        await insert_message(reply_msg)
-        # 异步触发工作流
-        import asyncio
-        if task.status in (TaskStatus.PENDING, TaskStatus.PAUSED):
-            crew = PaperCrew(task)
-            _running_crews[task_id] = crew
-            asyncio.create_task(_run_crew(task_id, crew))
-        return reply_msg.model_dump()
+        return await _trigger_workflow(task, reply_content=reply_content)
 
     # 普通对话回复
     reply_msg = Message(
@@ -169,7 +279,108 @@ async def agent_reply(task_id: str):
     return reply_msg.model_dump()
 
 
-async def _trigger_workflow(task: Task) -> dict:
+async def _progress_reply(task: Task) -> dict:
+    status_text = {
+        TaskStatus.PENDING: "当前任务还没有启动。你可以继续补充检索条件，确认后直接说“开始检索”。",
+        TaskStatus.PAUSED: "当前任务已暂停。确认继续时可以说“继续检索”或“开始检索”。",
+        TaskStatus.RUNNING: "当前任务正在运行中，检索图谱和论文库会持续更新。",
+        TaskStatus.REVIEWING: "检索已完成，当前进入论文库筛选阶段。",
+        TaskStatus.COMPLETED: "任务已完成。",
+        TaskStatus.FAILED: f"任务失败：{task.error_message or '未知错误'}",
+        TaskStatus.CANCELLED: "任务已终止。你可以调整条件后重新开始。",
+    }.get(task.status, f"当前任务状态：{task.status.value}")
+
+    suggestions = ["开始检索", "继续补充条件"] if task.status in (TaskStatus.PENDING, TaskStatus.PAUSED) else ["查看论文库"]
+    msg = Message(
+        id=str(uuid.uuid4()),
+        task_id=task.id,
+        role=MessageRole.AGENT,
+        content=status_text,
+        suggestions=suggestions,
+        timestamp=datetime.now(),
+        agent_name="Chat Agent",
+    )
+    await insert_message(msg)
+    return msg.model_dump()
+
+
+async def _ensure_search_plan(task: Task) -> Task:
+    """确保任务有可执行搜索方案。LLM 结构化失败时使用兜底方案，避免启动链路卡死。"""
+    from .tasks import _build_search_plan, _extract_topic
+
+    if task.search_plan:
+        return task
+
+    history = await get_messages(task.id, page=1, per_page=100)
+    research_text = _conversation_research_text(history)
+    deterministic_plan = _embodied_brain_trace_plan(research_text)
+    if deterministic_plan:
+        task.search_plan = deterministic_plan
+        task.query = deterministic_plan["task_title"]
+        task.sources = [PaperSource(s) for s in deterministic_plan["sources"]]
+        task.updated_at = datetime.now()
+        await update_task(task)
+        return task
+
+    if research_text:
+        extracted_topic = await _extract_topic(research_text)
+        if extracted_topic and not _is_greeting_or_control(extracted_topic):
+            task.query = extracted_topic
+
+    try:
+        task, _ = await _build_search_plan(task, insert_plan_message=False)
+        if task.search_plan and task.search_plan.get("task_title"):
+            task.query = str(task.search_plan["task_title"]).strip()
+        return task
+    except Exception:
+        fallback_query = (research_text or task.query).strip() or "academic paper search"
+        if len(fallback_query) > 220:
+            fallback_query = fallback_query[-220:]
+        fallback_title = await _extract_topic(fallback_query)
+        if not fallback_title or _is_greeting_or_control(fallback_title):
+            fallback_title = "论文检索任务"
+        task.search_plan = {
+            "query": fallback_query,
+            "task_title": fallback_title[:30],
+            "search_mode": "broad_exploration",
+            "goal": f"围绕 {fallback_query} 检索相关论文",
+            "domain": fallback_title,
+            "clarifying_questions": [],
+            "sources": [s.value if hasattr(s, "value") else str(s) for s in task.sources] or [
+                "arxiv", "semantic_scholar", "openalex", "crossref"
+            ],
+            "filters": {},
+            "core_concepts": [fallback_query],
+            "field_terms": [],
+            "exclude_terms": [],
+            "preferred_paper_types": ["survey", "foundation", "method", "benchmark"],
+            "subtopics": [{
+                "name": fallback_query,
+                "intent": f"检索 {fallback_query} 的代表性论文、基础论文和近期进展",
+                "required_terms": [fallback_query],
+                "optional_terms": [],
+                "queries": {
+                    "arxiv": fallback_query,
+                    "semantic_scholar": fallback_query,
+                    "openalex": fallback_query,
+                    "crossref": fallback_query,
+                },
+            }],
+            "queries": {
+                "arxiv": fallback_query,
+                "semantic_scholar": fallback_query,
+                "openalex": fallback_query,
+                "crossref": fallback_query,
+            },
+            "summary": "已使用兜底方案启动检索，后续可在论文库中继续筛选。",
+        }
+        task.query = fallback_title[:30]
+        task.updated_at = datetime.now()
+        await update_task(task)
+        return task
+
+
+async def _trigger_workflow(task: Task, reply_content: str | None = None) -> dict:
     """直接触发 Agent 工作流"""
     import asyncio
     from ..crew.paper_crew import PaperCrew
@@ -177,16 +388,24 @@ async def _trigger_workflow(task: Task) -> dict:
 
     task_id = task.id
 
-    # 如果有搜索方案，用方案中的 query
-    if task.search_plan and task.search_plan.get("query"):
-        task.query = task.search_plan["query"]
-        await update_task(task)
+    task = await _ensure_search_plan(task)
+
+    # 如果有搜索方案，把完整研究意图放入 filters，保留原始 task.query。
+    if task.search_plan:
+        task.filters = {**dict(task.filters), "_research_intent": task.search_plan}
+        if task.search_plan.get("task_title"):
+            task.query = str(task.search_plan["task_title"]).strip()
+        if task.search_plan.get("sources"):
+            task.sources = [PaperSource(s) for s in task.search_plan["sources"]]
+    task.status = TaskStatus.RUNNING
+    task.updated_at = datetime.now()
+    await update_task(task)
 
     reply_msg = Message(
         id=str(uuid.uuid4()),
         task_id=task_id,
         role=MessageRole.AGENT,
-        content=f"好的，以「{task.query}」为主题启动搜索！即将开始多源检索、智能筛选和自动下载。",
+        content=reply_content or f"任务已启动：{task.query}\n正在构建检索图谱并按分支搜索论文。",
         suggestions=["查看进度"],
         timestamp=datetime.now(),
         agent_name="Chat Agent",

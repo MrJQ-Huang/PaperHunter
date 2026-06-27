@@ -4,7 +4,8 @@ import { useChat } from '../hooks/useChat'
 import { usePaperStore, Task } from '../stores/paperStore'
 import { useAgentStore } from '../stores/agentStore'
 import AgentBubble from './AgentBubble'
-import { Send, Play, StopCircle, RotateCcw, Loader2, Sparkles, FileText, Wand2, BookOpen, Download } from 'lucide-react'
+import SearchGraphPanel from './SearchGraphPanel'
+import { Send, Play, StopCircle, RotateCcw, Loader2, Sparkles, FileText, BookOpen, Download } from 'lucide-react'
 
 interface Props {
   taskId: string | null
@@ -19,7 +20,7 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
   const navigate = useNavigate()
   const {
     messages, input, setInput, sendMessage, createAndSend, handleSuggestion,
-    confirmSearch, terminateTask, resetTask, generatePlan, resetPlan, isLoading,
+    confirmSearch, terminateTask, resetTask, resetPlan, isLoading,
   } = useChat(taskId, onTaskCreated, onTaskUpdated)
   const bottomRef = useRef<HTMLDivElement>(null)
   const localRef = useRef<HTMLInputElement>(null)
@@ -59,7 +60,6 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
   }
 
   const hasPlan = searchPlan != null
-  const showGeneratePlan = taskId && taskStatus === 'pending' && !hasPlan
   const showConfirm = taskId && taskStatus === 'pending' && hasPlan
   const showTerminate = taskId && taskStatus === 'running'
   const showReviewing = taskId && taskStatus === 'reviewing'
@@ -108,6 +108,10 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
         ))}
 
         {/* Agent 气泡 */}
+        {showAgents && (
+          <SearchGraphPanel />
+        )}
+
         {hasAgents && (
           <div className="space-y-2 py-1">
             {['search', 'filter', 'download', 'chat'].map((k) => {
@@ -148,22 +152,33 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
               <span className="text-xs font-semibold text-violet-600">搜索方案</span>
             </div>
             <div className="space-y-1.5 text-xs text-gray-600">
-              <div><span className="text-gray-400">搜索词：</span><span className="font-medium text-gray-800">{searchPlan.query}</span></div>
+              <div><span className="text-gray-400">目标：</span><span className="font-medium text-gray-800">{searchPlan.goal || searchPlan.query}</span></div>
+              {searchPlan.search_mode && <div><span className="text-gray-400">模式：</span>{searchPlan.search_mode}</div>}
               <div><span className="text-gray-400">数据源：</span>{searchPlan.sources?.join(', ')}</div>
+              {searchPlan.subtopics && searchPlan.subtopics.length > 0 && (
+                <div>
+                  <span className="text-gray-400">子方向：</span>
+                  <span>{searchPlan.subtopics.slice(0, 5).map((s) => s.name).join(' / ')}</span>
+                </div>
+              )}
+              {searchPlan.preferred_paper_types && searchPlan.preferred_paper_types.length > 0 && (
+                <div><span className="text-gray-400">文献类型：</span>{searchPlan.preferred_paper_types.join(', ')}</div>
+              )}
+              {searchPlan.exclude_terms && searchPlan.exclude_terms.length > 0 && (
+                <div><span className="text-gray-400">排除歧义：</span>{searchPlan.exclude_terms.slice(0, 5).join(', ')}</div>
+              )}
               {searchPlan.summary && <div><span className="text-gray-400">策略：</span>{searchPlan.summary}</div>}
+              {searchPlan.clarifying_questions && searchPlan.clarifying_questions.length > 0 && (
+                <div><span className="text-gray-400">待确认：</span>{searchPlan.clarifying_questions.slice(0, 2).join('；')}</div>
+              )}
             </div>
           </div>
         </div>
       )}
 
       {/* 操作按钮 */}
-      {(showGeneratePlan || showConfirm || showTerminate || showReviewing || showReset || showPaperChat) && !isLoading && (
+      {(showConfirm || showTerminate || showReviewing || showReset || showPaperChat) && !isLoading && (
         <div className="px-5 py-2.5 border-t border-gray-100 bg-white/80 backdrop-blur flex gap-2 flex-wrap">
-          {showGeneratePlan && (
-            <button onClick={generatePlan} className="flex items-center gap-1.5 px-5 py-2.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs font-medium rounded-xl hover:from-violet-600 hover:to-purple-600 transition-all shadow-sm shadow-violet-200/40 active:scale-[0.98]">
-              <Wand2 size={13} /> 生成搜索方案
-            </button>
-          )}
           {showConfirm && (
             <>
               <button onClick={confirmSearch} className="flex items-center gap-1.5 px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-medium rounded-xl hover:from-emerald-600 hover:to-teal-600 transition-all shadow-sm shadow-emerald-200/40 active:scale-[0.98]">

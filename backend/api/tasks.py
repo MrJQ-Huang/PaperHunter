@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from datetime import datetime
 import uuid
+import json
 
 from ..models.task import Task, TaskStatus
 from ..models.paper import PaperSource
@@ -38,8 +39,18 @@ async def create_task(req: CreateTaskRequest):
     )
     await insert_task(task)
 
+    user_msg = Message(
+        id=str(uuid.uuid4()),
+        task_id=task.id,
+        role=MessageRole.USER,
+        content=req.query,
+        suggestions=[],
+        timestamp=datetime.now(),
+    )
+    await insert_message(user_msg)
+
     # 用 LLM 生成有针对性的欢迎消息（传入原始输入和提取后的主题）
-    welcome_content, suggestions = await _generate_welcome(clean_query)
+    welcome_content, suggestions = await _generate_welcome(clean_query, req.query)
 
     msg = Message(
         id=str(uuid.uuid4()),
@@ -69,7 +80,7 @@ async def _extract_topic(user_input: str) -> str:
     body = {
         "model": settings.llm_model,
         "max_tokens": 128,
-        "system": "从用户的输入中提取核心研究主题关键词，去掉客套话和指令性语句。只输出研究主题本身，不要解释。\n\n示例：\n输入：请你帮我检索 时域天线测量以及探头补偿的相关论文\n输出：时域天线测量 探头补偿\n\n输入：找一下transformer在NLP中的应用\n输出：transformer NLP 应用\n\n输入：search for papers about deep learning in medical imaging\n输出：deep learning medical imaging",
+        "system": "从用户输入中提取论文检索主题。去掉客套话和纯操作话，但必须保留研究对象、已给出的子方向、时间/排序要求，以及“忘了/不确定/帮我想/待确认”这类补全线索。只输出适合作为任务标题的短语，不要解释。\n\n示例：\n输入：请你帮我检索 时域天线测量以及探头补偿的相关论文\n输出：时域天线测量 探头补偿\n\n输入：找一下transformer在NLP中的应用\n输出：transformer NLP 应用\n\n输入：你好 我想找具身智能领域的大脑的三个大类的论文，一个是VLA 一个是世界模型 还有一个我忘了。按起始时间到现在的顺序来找\n输出：具身智能大脑 VLA 世界模型 第三方向待确认 时间线论文\n\n输入：search for papers about deep learning in medical imaging\n输出：deep learning medical imaging",
         "messages": [
             {"role": "user", "content": user_input}
         ],
@@ -99,7 +110,7 @@ async def _extract_topic(user_input: str) -> str:
         return user_input
 
 
-async def _generate_welcome(query: str) -> tuple[str, list[str]]:
+async def _generate_welcome(query: str, original_input: str | None = None) -> tuple[str, list[str]]:
     """用 LLM 分析用户查询，生成有针对性的欢迎消息"""
     import json
     import aiohttp
@@ -114,18 +125,22 @@ async def _generate_welcome(query: str) -> tuple[str, list[str]]:
     body = {
         "model": settings.llm_model,
         "max_tokens": 1024,
-        "system": """你是 PaperHunter 的学术搜索助手。用户输入了一个论文检索需求，你需要：
+        "system": """你是 PaperHunter 的学术搜索助手。用户刚开始一个新的论文检索任务，你需要处理好首轮复杂输入。
 
 1. 理解并用专业的学术语言复述用户的研究需求
-2. 拆解出 2-3 个具体的子研究方向
+2. 拆解出 2-4 个具体的子研究方向
 3. 给出搜索策略建议（时间范围、文献类型等）
 4. 提供 2-4 个贴合该研究主题的快捷回复选项
+5. 如果用户说“忘了/不确定/你帮我想/还有一个想不起来”，不要只反问；要给出 3-5 个高概率候选方向，并说明推荐默认候选
+6. 如果输入中已经有明确方向，要复述“已确认方向”和“待确认方向”，不要把待确认方向当作已经确认
+7. 对首轮输入要尽量友好地帮助用户补全，而不是让用户重新解释第一句话
+8. 如果用户要“按起始时间到现在/发展脉络/时间线”检索，要明确会覆盖奠基论文、综述论文和最新代表工作
 
 回复格式（严格遵守）：
 先写正文（150字以内，中文），然后换行写：
 [SUGGESTIONS: ["选项1", "选项2", "选项3"]]""",
         "messages": [
-            {"role": "user", "content": f"我的论文检索需求：{query}"}
+            {"role": "user", "content": f"原始输入：{original_input or query}\n\n提取后的主题：{query}"}
         ],
     }
 
@@ -201,24 +216,37 @@ async def update_task_fields(task_id: str, req: UpdateTaskRequest):
 @router.post("/tasks/{task_id}/generate-plan")
 async def generate_plan(task_id: str):
     """从对话历史生成结构化搜索方案"""
-    import json
-    import aiohttp
-    from ..config import settings
-    from ..database import get_messages
-
     task = await get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     if task.status not in (TaskStatus.PENDING, TaskStatus.PAUSED):
         raise HTTPException(status_code=400, detail=f"Task status is {task.status.value}, cannot generate plan")
+    if task.search_plan:
+        return task.model_dump()
+
+    try:
+        task, plan = await _build_search_plan(task, insert_plan_message=True)
+        return task.model_dump()
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"LLM 返回的内容无法解析为 JSON: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成方案失败: {str(e)}")
+
+
+async def _build_search_plan(task: Task, insert_plan_message: bool = True) -> tuple[Task, dict]:
+    """从对话生成计划并写入 task。供显式按钮和聊天确认自动启动共用。"""
+    import json
+    import aiohttp
+    from ..config import settings
+    from ..database import get_messages
 
     # 读取对话历史（只取最近 6 条，每条截断 100 字，减少 token 用量）
-    history = await get_messages(task_id, page=1, per_page=50)
-    recent = history[-6:] if len(history) > 6 else history
+    history = await get_messages(task.id, page=1, per_page=50)
+    recent = history[-10:] if len(history) > 10 else history
     conversation = []
     for msg in recent:
         role = "用户" if msg.role == MessageRole.USER else "助手"
-        text = msg.content[:100] if len(msg.content) > 100 else msg.content
+        text = msg.content[:300] if len(msg.content) > 300 else msg.content
         conversation.append(f"{role}: {text}")
     conversation_text = "\n".join(conversation)
 
@@ -231,7 +259,56 @@ async def generate_plan(task_id: str):
     body = {
         "model": settings.llm_model,
         "max_tokens": 4096,
-        "system": "从对话提取搜索方案，输出纯JSON：\n{\"query\":\"英文关键词\",\"sources\":[\"arxiv\",\"semantic_scholar\",\"openalex\",\"crossref\"],\"filters\":{},\"summary\":\"策略20字\"}\nquery不超6词英文；只输出JSON。",
+        "system": """从对话中提取论文检索方案，输出纯 JSON。不要只生成一个短关键词，要构建可执行的研究意图画像。
+
+JSON 格式：
+{
+  "query": "保留用户核心主题的英文检索标题，不限制 6 词",
+  "task_title": "适合显示在任务栏的中文标题，30字以内",
+  "search_mode": "beginner_learning | authoritative_core | recent_sota | subtopic_deep_dive | broad_exploration",
+  "goal": "用户本次检索的真实目标",
+  "domain": "英文领域名称",
+  "clarifying_questions": ["如果仍缺信息，后续最应该问用户的问题"],
+  "sources": ["arxiv","semantic_scholar","openalex","crossref"],
+  "filters": {"year_min": null, "only_oa": false},
+  "core_concepts": ["核心概念"],
+  "field_terms": ["领域术语"],
+  "exclude_terms": ["歧义排除词"],
+  "preferred_paper_types": ["survey","foundation","benchmark","method","system"],
+  "subtopics": [
+    {
+      "name": "子方向英文名",
+      "intent": "该子方向要召回什么",
+      "required_terms": ["必须相关术语"],
+      "optional_terms": ["同义词/相关术语/代表系统"],
+      "queries": {
+        "arxiv": "arXiv 布尔查询",
+        "semantic_scholar": "自然语言查询",
+        "openalex": "简洁关键词查询",
+        "crossref": "简洁关键词查询"
+      }
+    }
+  ],
+  "queries": {
+    "arxiv": "兜底总查询",
+    "semantic_scholar": "兜底总查询",
+    "openalex": "兜底总查询",
+    "crossref": "兜底总查询"
+  },
+  "summary": "面向用户的简短策略说明",
+  "annotation_policy": {
+    "paper_types": ["survey","benchmark","dataset","method","system","application","theory"],
+    "learning_roles": ["field_overview","foundation","representative_method","recent_frontier","benchmark_or_dataset","implementation_reference"]
+  }
+}
+
+策略要求：
+1. 如果用户说自己是新手、想入门、想了解某领域，search_mode 用 beginner_learning，优先综述、基础论文、代表系统、benchmark、近年前沿。
+2. 如果用户只给模糊缩写或宽泛领域，clarifying_questions 给出 3 个主动追问，但仍要生成一个可先执行的模糊探索方案。
+3. 不要强迫所有 query 都包含缩写词；要覆盖同义表达、上位概念和代表系统名。
+4. 对缩写歧义要给 exclude_terms，例如 VLA 排除 Very Large Array、radio astronomy、telescope。
+5. subtopics 生成 4-7 个，每个 query 尽量互补。
+6. 只输出 JSON。""",
         "messages": [
             {"role": "user", "content": f"对话：\n{conversation_text}\n\n输出JSON："}
         ],
@@ -283,42 +360,75 @@ async def generate_plan(task_id: str):
         # 验证必需字段
         if not plan.get("query"):
             raise Exception("LLM 返回的方案缺少 query 字段")
+        plan.setdefault("task_title", plan.get("domain") or plan["query"])
+        plan.setdefault("sources", ["arxiv", "semantic_scholar", "openalex", "crossref"])
+        plan.setdefault("filters", {})
+        plan.setdefault("search_mode", "broad_exploration")
+        plan.setdefault("goal", plan.get("summary") or f"检索 {plan['query']} 相关论文")
+        plan.setdefault("domain", plan["query"])
+        plan.setdefault("core_concepts", plan["query"].split()[:3])
+        plan.setdefault("field_terms", [])
+        plan.setdefault("exclude_terms", [])
+        plan.setdefault("preferred_paper_types", ["survey", "foundation", "method", "benchmark"])
+        plan.setdefault("clarifying_questions", [])
+        if not plan.get("queries"):
+            plan["queries"] = {
+                "arxiv": plan["query"],
+                "semantic_scholar": plan["query"],
+                "openalex": plan["query"],
+                "crossref": plan["query"],
+            }
+        if not plan.get("subtopics"):
+            plan["subtopics"] = [{
+                "name": plan["query"],
+                "intent": plan["goal"],
+                "required_terms": plan.get("core_concepts", []),
+                "optional_terms": plan.get("field_terms", []),
+                "queries": plan["queries"],
+            }]
 
         # 存入 task
         task.search_plan = plan
+        if plan.get("task_title"):
+            task.query = str(plan["task_title"]).strip()
         task.updated_at = datetime.now()
         await update_task(task)
 
         # 发送方案消息给用户
-        sources_str = ", ".join(plan.get("sources", []))
-        filters_desc = []
-        if plan.get("filters", {}).get("year_min"):
-            filters_desc.append(f"{plan['filters']['year_min']}年至今")
-        if plan.get("filters", {}).get("only_oa"):
-            filters_desc.append("仅开放获取")
-        filters_str = "、".join(filters_desc) if filters_desc else "无特殊限制"
+        if insert_plan_message:
+            sources_str = ", ".join(plan.get("sources", []))
+            filters_desc = []
+            if plan.get("filters", {}).get("year_min"):
+                filters_desc.append(f"{plan['filters']['year_min']}年至今")
+            if plan.get("filters", {}).get("only_oa"):
+                filters_desc.append("仅开放获取")
+            filters_str = "、".join(filters_desc) if filters_desc else "无特殊限制"
 
-        msg = Message(
-            id=str(uuid.uuid4()),
-            task_id=task_id,
-            role=MessageRole.AGENT,
-            content=f"搜索方案已生成：\n\n"
-                    f"搜索词：{plan['query']}\n"
-                    f"数据源：{sources_str}\n"
-                    f"筛选条件：{filters_str}\n"
-                    f"策略说明：{plan.get('summary', '')}",
-            suggestions=["确认搜索", "调整方案"],
-            timestamp=datetime.now(),
-            agent_name="Chat Agent",
-        )
-        await insert_message(msg)
+            msg = Message(
+                id=str(uuid.uuid4()),
+                task_id=task.id,
+                role=MessageRole.AGENT,
+                content=f"搜索方案已生成：\n\n"
+                        f"标题：{task.query}\n"
+                        f"目标：{plan.get('goal', plan['query'])}\n"
+                        f"模式：{plan.get('search_mode', 'broad_exploration')}\n"
+                        f"子方向：{', '.join([s.get('name', '') for s in plan.get('subtopics', [])[:5] if s.get('name')])}\n"
+                        f"排除歧义：{', '.join(plan.get('exclude_terms', [])[:5]) or '无'}\n"
+                        f"数据源：{sources_str}\n"
+                        f"筛选条件：{filters_str}\n"
+                        f"策略说明：{plan.get('summary', '')}",
+                suggestions=["确认搜索", "调整方案"],
+                timestamp=datetime.now(),
+                agent_name="Chat Agent",
+            )
+            await insert_message(msg)
 
-        return task.model_dump()
+        return task, plan
 
     except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"LLM 返回的内容无法解析为 JSON: {content[:200]}")
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成方案失败: {str(e)}")
+        raise
 
 
 @router.post("/tasks/{task_id}/reset-plan")
@@ -336,8 +446,8 @@ async def reset_plan(task_id: str):
         id=str(uuid.uuid4()),
         task_id=task_id,
         role=MessageRole.AGENT,
-        content="方案已清除。请继续告诉我你的搜索需求，准备好了再生成新方案。",
-        suggestions=["生成搜索方案"],
+        content="方案已清除。请继续告诉我你的搜索需求，准备好了可以直接说“开始搜索”。",
+        suggestions=["继续补充需求", "开始搜索"],
         timestamp=datetime.now(),
         agent_name="Chat Agent",
     )
@@ -355,25 +465,33 @@ async def confirm_task(task_id: str):
     if task.status not in (TaskStatus.PENDING, TaskStatus.PAUSED):
         raise HTTPException(status_code=400, detail=f"Task status is {task.status.value}, cannot start")
 
-    # 如果有搜索方案，用方案中的 query 覆盖
+    if not task.search_plan:
+        task, _ = await _build_search_plan(task, insert_plan_message=False)
+
+    # 如果有搜索方案，合并 filters/sources，并保留完整研究意图供搜索与评分使用。
+    # 不再用短 query 覆盖 task.query，避免丢失用户原始方向。
     if task.search_plan:
         plan = task.search_plan
-        if plan.get("query"):
-            task.query = plan["query"]
         if plan.get("filters"):
             merged_filters = dict(task.filters)
             merged_filters.update(plan["filters"])
+            merged_filters["_research_intent"] = plan
             task.filters = merged_filters
+        else:
+            task.filters = {**dict(task.filters), "_research_intent": plan}
         if plan.get("sources"):
             task.sources = [PaperSource(s) for s in plan["sources"]]
-        await update_task(task)
+
+    task.status = TaskStatus.RUNNING
+    task.updated_at = datetime.now()
+    await update_task(task)
 
     # 发送确认消息
     msg = Message(
         id=str(uuid.uuid4()),
         task_id=task_id,
         role=MessageRole.AGENT,
-        content=f"好的，以「{task.query}」为主题开始搜索论文！请稍候...",
+        content=f"任务已启动：{task.query}\n正在构建检索图谱并按分支搜索论文。",
         timestamp=datetime.now(),
         agent_name="Chat Agent",
     )
@@ -616,7 +734,10 @@ async def agent_filter(task_id: str):
         raise HTTPException(status_code=400, detail="该任务没有论文")
 
     # LLM 评分
-    scores = await llm_score_papers(task.query, papers)
+    import json
+    intent = task.filters.get("_research_intent") or task.search_plan or {"query": task.query}
+    scoring_query = json.dumps(intent, ensure_ascii=False) if isinstance(intent, dict) else task.query
+    scores = await llm_score_papers(scoring_query, papers)
     score_map = {s["paper_id"]: s for s in scores}
 
     updated = 0
@@ -625,9 +746,22 @@ async def agent_filter(task_id: str):
         if result:
             new_score = result["relevance"]
             await update_paper_download(p.id, p.local_pdf_path or "", p.download_status or "pending")
-            # 更新 relevance_score
+            # 更新 relevance_score 和标注标签
             from ..database import update_paper
-            await update_paper(p.id, relevance_score=new_score)
+            subtopics = result.get("subtopics") or p.subtopics
+            method_tags = result.get("method_tags") or p.method_tags
+            quality_tags = result.get("quality_tags") or p.quality_tags
+            await update_paper(
+                p.id,
+                relevance_score=new_score,
+                paper_type=result.get("paper_type") or p.paper_type,
+                subtopics=json.dumps(subtopics, ensure_ascii=False),
+                learning_role=result.get("learning_role") or p.learning_role,
+                difficulty=result.get("difficulty") or p.difficulty,
+                method_tags=json.dumps(method_tags, ensure_ascii=False),
+                quality_tags=json.dumps(quality_tags, ensure_ascii=False),
+                annotation_reason=result.get("reason") or p.annotation_reason,
+            )
             updated += 1
 
     return {"message": f"已对 {updated} 篇论文完成评分", "count": updated}

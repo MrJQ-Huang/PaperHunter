@@ -14,6 +14,14 @@ export interface Paper {
   venue: string | null
   is_open_access: boolean
   topics: string[]
+  paper_type: string | null
+  subtopics: string[]
+  learning_role: string | null
+  difficulty: string | null
+  method_tags: string[]
+  quality_tags: string[]
+  annotation_reason: string | null
+  search_subtopic: string | null
   local_pdf_path: string | null
   download_status: string
   relevance_score: number | null
@@ -35,6 +43,21 @@ export interface Task {
     sources: string[]
     filters: Record<string, any>
     summary: string
+    search_mode?: string
+    goal?: string
+    domain?: string
+    core_concepts?: string[]
+    field_terms?: string[]
+    exclude_terms?: string[]
+    preferred_paper_types?: string[]
+    subtopics?: Array<{
+      name: string
+      intent?: string
+      required_terms?: string[]
+      optional_terms?: string[]
+      queries?: Record<string, string>
+    }>
+    clarifying_questions?: string[]
   } | null
   created_at: string
   updated_at: string
@@ -43,7 +66,7 @@ export interface Task {
 
 export interface ChatMessage {
   id?: string
-  type: 'chat' | 'agent_status' | 'agent_log' | 'pong'
+  type: 'chat' | 'agent_status' | 'agent_log' | 'search_graph_update' | 'pong'
   from?: 'user' | 'agent'
   content?: string
   timestamp?: string
@@ -101,10 +124,13 @@ export const usePaperStore = create<PaperState>((set, get) => ({
       },
     })),
   updateTask: (task) =>
-    set((state) => ({
-      currentTask: state.currentTask?.id === task.id ? task : state.currentTask,
-      tasks: state.tasks.map((t) => (t.id === task.id ? task : t)),
-    })),
+    set((state) => {
+      const hasTask = state.tasks.some((t) => t.id === task.id)
+      return {
+        currentTask: state.currentTask?.id === task.id ? task : state.currentTask,
+        tasks: hasTask ? state.tasks.map((t) => (t.id === task.id ? task : t)) : [task, ...state.tasks],
+      }
+    }),
   removePaper: (paperId) =>
     set((state) => ({
       papers: state.papers.filter((p) => p.id !== paperId),

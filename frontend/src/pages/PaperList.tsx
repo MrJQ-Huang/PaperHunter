@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { usePaperStore, Paper, Task } from '../stores/paperStore'
 import PaperCard from '../components/PaperCard'
-import { BookOpen, RefreshCw, ChevronLeft, ChevronRight, Search, Trash2, X, Download, AlertCircle, Clock, ArrowDownWideNarrow, ArrowUpNarrowWide, Star, Filter } from 'lucide-react'
+import { BookOpen, RefreshCw, ChevronLeft, ChevronRight, Search, Trash2, X, Download, AlertCircle, Clock, ArrowDownWideNarrow, ArrowUpNarrowWide, Star, GitBranch, Network, CalendarDays, Layers3 } from 'lucide-react'
 
 const SOURCE_OPTIONS = [
   { value: '', label: '全部来源' },
@@ -26,6 +26,68 @@ const DOWNLOAD_FILTERS = [
   { value: 'failed', label: '失败', icon: AlertCircle },
 ]
 
+const PAPER_TYPE_FILTERS = [
+  { value: '', label: '全部类型' },
+  { value: 'survey', label: '综述' },
+  { value: 'benchmark', label: 'Benchmark' },
+  { value: 'dataset', label: '数据集' },
+  { value: 'method', label: '方法' },
+  { value: 'system', label: '系统' },
+]
+
+const LEARNING_ROLE_FILTERS = [
+  { value: '', label: '全部角色' },
+  { value: 'field_overview', label: '入门综述' },
+  { value: 'foundation', label: '基础必读' },
+  { value: 'representative_method', label: '代表方法' },
+  { value: 'recent_frontier', label: '前沿' },
+  { value: 'benchmark_or_dataset', label: 'Benchmark' },
+  { value: 'implementation_reference', label: '实现参考' },
+]
+
+const typeLabels: Record<string, string> = {
+  survey: '综述',
+  benchmark: 'Benchmark',
+  dataset: '数据集',
+  method: '方法',
+  system: '系统',
+  application: '应用',
+  theory: '理论',
+  unknown: '未分类',
+}
+
+const roleLabels: Record<string, string> = {
+  field_overview: '入门综述',
+  foundation: '基础必读',
+  representative_method: '代表方法',
+  recent_frontier: '前沿',
+  benchmark_or_dataset: 'Benchmark',
+  implementation_reference: '实现参考',
+  niche_detail: '细分参考',
+}
+
+type GraphBranch = {
+  name: string
+  intent?: string
+  papers: Paper[]
+  count: number
+  years: number[]
+}
+
+const getPaperYear = (paper: Paper) => {
+  if (!paper.published_date) return null
+  const year = new Date(paper.published_date).getFullYear()
+  return Number.isFinite(year) ? year : null
+}
+
+const normalizeTopic = (value: string) => value.trim().toLowerCase()
+
+const asStringList = (value: unknown): string[] => {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean)
+  if (typeof value === 'string' && value.trim()) return [value.trim()]
+  return []
+}
+
 export default function PaperList() {
   const papers = usePaperStore((s) => s.papers)
   const total = usePaperStore((s) => s.total)
@@ -38,13 +100,23 @@ export default function PaperList() {
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [downloadStatus, setDownloadStatus] = useState('')
   const [source, setSource] = useState('')
+  const [paperType, setPaperType] = useState('')
+  const [learningRole, setLearningRole] = useState('')
+  const [subtopic, setSubtopic] = useState('')
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(false)
   const [editingPaper, setEditingPaper] = useState<Paper | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
   const [selectedPapers, setSelectedPapers] = useState<Set<string>>(new Set())
   const [downloading, setDownloading] = useState(false)
+  const [graphPapers, setGraphPapers] = useState<Paper[]>([])
+  const [graphLoading, setGraphLoading] = useState(false)
   const perPage = 20
+  const activeTask = useMemo(
+    () => tasks.find((task) => task.id === selectedTaskId) || tasks[0] || null,
+    [tasks, selectedTaskId]
+  )
+  const activeTaskId = selectedTaskId || activeTask?.id || ''
 
   const fetchPapers = useCallback(async () => {
     setLoading(true)
@@ -58,6 +130,9 @@ export default function PaperList() {
       if (search) params.set('search', search)
       if (downloadStatus) params.set('download_status', downloadStatus)
       if (source) params.set('source', source)
+      if (paperType) params.set('paper_type', paperType)
+      if (learningRole) params.set('learning_role', learningRole)
+      if (subtopic) params.set('subtopic', subtopic)
       const resp = await fetch(`/api/papers?${params}`)
       if (resp.ok) {
         const data = await resp.json()
@@ -66,7 +141,7 @@ export default function PaperList() {
     } catch {} finally {
       setLoading(false)
     }
-  }, [page, sort, selectedTaskId, search, downloadStatus, source, setPapers])
+  }, [page, sort, selectedTaskId, search, downloadStatus, source, paperType, learningRole, subtopic, setPapers])
 
   useEffect(() => {
     fetchPapers()
@@ -79,6 +154,25 @@ export default function PaperList() {
       }).catch(() => {})
     }
   }, [tasks.length])
+
+  useEffect(() => {
+    if (!activeTaskId) {
+      setGraphPapers([])
+      return
+    }
+    setGraphLoading(true)
+    const params = new URLSearchParams({
+      task_id: activeTaskId,
+      page: '1',
+      per_page: '10000',
+      sort: 'date',
+    })
+    fetch(`/api/papers?${params}`)
+      .then((resp) => resp.ok ? resp.json() : null)
+      .then((data) => setGraphPapers(data?.papers || []))
+      .catch(() => setGraphPapers([]))
+      .finally(() => setGraphLoading(false))
+  }, [activeTaskId])
 
   const handleDownload = async (paperId: string) => {
     try {
@@ -188,6 +282,77 @@ export default function PaperList() {
     } catch {}
   }
 
+  const graphData = useMemo(() => {
+    const planSubtopics = activeTask?.search_plan?.subtopics || []
+    const branchMap = new Map<string, GraphBranch>()
+
+    planSubtopics.forEach((item) => {
+      const name = item.name?.trim()
+      if (!name) return
+      branchMap.set(normalizeTopic(name), {
+        name,
+        intent: item.intent,
+        papers: [],
+        count: 0,
+        years: [],
+      })
+    })
+
+    graphPapers.forEach((paper) => {
+      const names = [
+        ...asStringList(paper.subtopics),
+        paper.search_subtopic || '',
+      ].filter(Boolean)
+      const branchNames = names.length > 0 ? names : ['未归类']
+
+      branchNames.forEach((name) => {
+        const key = normalizeTopic(name)
+        const branch = branchMap.get(key) || {
+          name,
+          papers: [],
+          count: 0,
+          years: [],
+        }
+        if (!branch.papers.some((p) => p.id === paper.id)) {
+          branch.papers.push(paper)
+        }
+        branchMap.set(key, branch)
+      })
+    })
+
+    const branches = Array.from(branchMap.values()).map((branch) => {
+      const papersByDate = [...branch.papers].sort((a, b) => {
+        const ay = getPaperYear(a) || 9999
+        const by = getPaperYear(b) || 9999
+        return ay - by || (b.relevance_score || 0) - (a.relevance_score || 0)
+      })
+      const years = Array.from(new Set(papersByDate.map(getPaperYear).filter((y): y is number => y !== null))).sort((a, b) => a - b)
+      return {
+        ...branch,
+        papers: papersByDate,
+        count: papersByDate.length,
+        years,
+      }
+    }).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+
+    const typeCounts = graphPapers.reduce<Record<string, number>>((acc, paper) => {
+      const type = paper.paper_type || 'unknown'
+      acc[type] = (acc[type] || 0) + 1
+      return acc
+    }, {})
+
+    return {
+      domain: activeTask?.search_plan?.domain || activeTask?.query || '当前任务',
+      goal: activeTask?.search_plan?.goal || activeTask?.query || '',
+      branches,
+      typeCounts,
+      yearRange: graphPapers
+        .map(getPaperYear)
+        .filter((year): year is number => year !== null)
+        .sort((a, b) => a - b),
+    }
+  }, [activeTask, graphPapers])
+
   const totalPages = Math.ceil(total / perPage)
 
   return (
@@ -251,6 +416,48 @@ export default function PaperList() {
               </button>
             ))}
           </div>
+        </div>
+
+        {/* 标签筛选 */}
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <span className="font-medium text-sm text-gray-800 block mb-2">文献类型</span>
+          <div className="flex flex-wrap gap-1.5">
+            {PAPER_TYPE_FILTERS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => { setPaperType(opt.value); setPage(1) }}
+                className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                  paperType === opt.value ? 'bg-violet-50 text-violet-600 font-medium' : 'text-gray-500 hover:bg-gray-50'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <span className="font-medium text-sm text-gray-800 block mb-2">学习角色</span>
+          <div className="flex flex-wrap gap-1.5">
+            {LEARNING_ROLE_FILTERS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => { setLearningRole(opt.value); setPage(1) }}
+                className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                  learningRole === opt.value ? 'bg-amber-50 text-amber-700 font-medium' : 'text-gray-500 hover:bg-gray-50'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <input
+            type="text"
+            value={subtopic}
+            onChange={(e) => { setSubtopic(e.target.value); setPage(1) }}
+            placeholder="子方向关键词..."
+            className="mt-3 w-full px-2 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-200"
+          />
         </div>
 
         {/* 排序 */}
@@ -356,6 +563,159 @@ export default function PaperList() {
               <RefreshCw size={14} />
               刷新
             </button>
+          </div>
+        </div>
+
+        <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4">
+          <div className="flex items-start justify-between gap-4 mb-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <Network size={16} className="text-violet-500" />
+                <h3 className="font-semibold text-gray-800 text-sm">任务知识图谱</h3>
+                {graphLoading && <RefreshCw size={12} className="text-gray-300 animate-spin" />}
+              </div>
+              <p className="text-xs text-gray-500 line-clamp-1">{graphData.goal || graphData.domain}</p>
+            </div>
+            <button
+              onClick={() => { setSelectedTaskId(activeTaskId); setSubtopic(''); setSearch(''); setPage(1) }}
+              disabled={!activeTaskId}
+              className="shrink-0 px-3 py-1.5 text-xs border border-gray-200 rounded-lg text-gray-500 hover:bg-gray-50 disabled:opacity-40"
+            >
+              查看全部分支
+            </button>
+          </div>
+
+          <div className="grid grid-cols-12 gap-4">
+            <div className="col-span-12 xl:col-span-3">
+              <button
+                onClick={() => { setSelectedTaskId(activeTaskId); setSubtopic(''); setPage(1) }}
+                className="w-full text-left rounded-xl border border-violet-100 bg-violet-50/70 p-4 hover:bg-violet-50 transition-colors"
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <Layers3 size={16} className="text-violet-500" />
+                  <span className="text-xs font-semibold text-violet-600">大领域</span>
+                </div>
+                <div className="font-semibold text-gray-900 text-sm line-clamp-2">{graphData.domain}</div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
+                  <div>
+                    <span className="block text-gray-400">论文</span>
+                    <span className="font-semibold text-gray-700">{graphPapers.length}</span>
+                  </div>
+                  <div>
+                    <span className="block text-gray-400">分支</span>
+                    <span className="font-semibold text-gray-700">{graphData.branches.length}</span>
+                  </div>
+                  <div className="col-span-2">
+                    <span className="block text-gray-400">时间</span>
+                    <span className="font-semibold text-gray-700">
+                      {graphData.yearRange.length > 0
+                        ? `${graphData.yearRange[0]}-${graphData.yearRange[graphData.yearRange.length - 1]}`
+                        : '暂无'}
+                    </span>
+                  </div>
+                </div>
+              </button>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {Object.entries(graphData.typeCounts).slice(0, 6).map(([type, count]) => (
+                  <button
+                    key={type}
+                    onClick={() => { setPaperType(type === 'unknown' ? '' : type); setPage(1) }}
+                    className="px-2 py-1 text-[11px] rounded bg-gray-50 text-gray-500 hover:bg-gray-100"
+                  >
+                    {typeLabels[type] || type} {count}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="col-span-12 xl:col-span-9 overflow-x-auto">
+              {graphData.branches.length === 0 ? (
+                <div className="h-full min-h-[180px] flex items-center justify-center text-sm text-gray-300 border border-dashed border-gray-200 rounded-xl">
+                  当前任务还没有可绘制的子方向标签
+                </div>
+              ) : (
+                <div className="flex gap-3 min-w-max pb-1">
+                  {graphData.branches.slice(0, 10).map((branch) => {
+                    const selected = normalizeTopic(subtopic) === normalizeTopic(branch.name)
+                    const milestonePapers = branch.papers.slice(0, 6)
+                    return (
+                      <div
+                        key={branch.name}
+                        className={`w-72 rounded-xl border p-3 transition-colors ${
+                          selected ? 'border-violet-300 bg-violet-50/60' : 'border-gray-200 bg-white'
+                        }`}
+                      >
+                        <button
+                          onClick={() => {
+                            setSelectedTaskId(activeTaskId)
+                            setSubtopic(branch.name)
+                            setSearch('')
+                            setPage(1)
+                          }}
+                          className="w-full text-left"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <GitBranch size={14} className={selected ? 'text-violet-500 shrink-0' : 'text-gray-400 shrink-0'} />
+                              <span className="text-sm font-semibold text-gray-800 line-clamp-1">{branch.name}</span>
+                            </div>
+                            <span className="text-xs text-gray-400 shrink-0">{branch.count} 篇</span>
+                          </div>
+                          {branch.intent && <p className="mt-1 text-[11px] text-gray-400 line-clamp-2">{branch.intent}</p>}
+                        </button>
+
+                        <div className="mt-3 border-l border-gray-200 pl-3 space-y-2">
+                          {milestonePapers.length === 0 ? (
+                            <div className="text-xs text-gray-300 py-8">等待该分支补充论文</div>
+                          ) : milestonePapers.map((paper) => {
+                            const year = getPaperYear(paper)
+                            return (
+                              <button
+                                key={paper.id}
+                                onClick={() => {
+                                  setSelectedTaskId(activeTaskId)
+                                  setSubtopic(branch.name)
+                                  setSearch(paper.title)
+                                  setPage(1)
+                                }}
+                                className="relative block w-full text-left rounded-lg px-2 py-1.5 hover:bg-gray-50"
+                              >
+                                <span className="absolute -left-[17px] top-3 w-2 h-2 rounded-full bg-violet-300 border border-white" />
+                                <div className="flex items-center gap-2 mb-0.5">
+                                  <CalendarDays size={11} className="text-gray-300" />
+                                  <span className="text-[11px] font-medium text-gray-500">{year || '未知年份'}</span>
+                                  {paper.paper_type && (
+                                    <span className="text-[10px] text-gray-400 bg-gray-50 rounded px-1">
+                                      {typeLabels[paper.paper_type] || paper.paper_type}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-gray-700 line-clamp-2">{paper.title}</div>
+                                {paper.learning_role && (
+                                  <div className="mt-0.5 text-[10px] text-amber-600">
+                                    {roleLabels[paper.learning_role] || paper.learning_role}
+                                  </div>
+                                )}
+                              </button>
+                            )
+                          })}
+                        </div>
+
+                        {branch.years.length > 0 && (
+                          <div className="mt-3 flex flex-wrap gap-1">
+                            {branch.years.slice(0, 8).map((year) => (
+                              <span key={year} className="text-[10px] text-gray-400 bg-gray-50 px-1.5 py-0.5 rounded">
+                                {year}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

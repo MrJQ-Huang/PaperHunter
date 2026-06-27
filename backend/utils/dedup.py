@@ -53,6 +53,18 @@ def merge_paper(existing: Paper, new: Paper):
         if new.source.value not in existing.topics:
             existing.topics.append(f"also_from:{new.source.value}")
 
+    for subtopic in new.subtopics:
+        if subtopic and subtopic not in existing.subtopics:
+            existing.subtopics.append(subtopic)
+    if not existing.search_subtopic and new.search_subtopic:
+        existing.search_subtopic = new.search_subtopic
+    for tag in new.method_tags:
+        if tag and tag not in existing.method_tags:
+            existing.method_tags.append(tag)
+    for tag in new.quality_tags:
+        if tag and tag not in existing.quality_tags:
+            existing.quality_tags.append(tag)
+
     # 更新 OA 状态
     if new.is_open_access and not existing.is_open_access:
         existing.is_open_access = True

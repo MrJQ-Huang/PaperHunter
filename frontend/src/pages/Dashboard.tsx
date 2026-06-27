@@ -10,6 +10,7 @@ import { Sparkles } from 'lucide-react'
 
 export default function Dashboard() {
   const pollingTasks = useRef(new Set<string>())
+  const currentTaskRef = useRef<Task | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const resetAgents = useAgentStore((s) => s.resetAgents)
@@ -22,6 +23,10 @@ export default function Dashboard() {
   const setPapers = usePaperStore((s) => s.setPapers)
   const tasks = usePaperStore((s) => s.tasks)
   const setTasks = usePaperStore((s) => s.setTasks)
+
+  useEffect(() => {
+    currentTaskRef.current = currentTask
+  }, [currentTask])
 
   const fetchTasks = useCallback(async () => {
     try {
@@ -102,9 +107,12 @@ export default function Dashboard() {
         const resp = await fetch(`/api/tasks/${taskId}`)
         if (resp.ok) {
           const d = await resp.json()
-          setCurrentTask(d)
-          applyAgentStatuses(d)
-          fetchPapers(taskId)
+          usePaperStore.getState().updateTask(d)
+          if (currentTaskRef.current?.id === taskId) {
+            setCurrentTask(d)
+            applyAgentStatuses(d)
+            fetchPapers(taskId)
+          }
           if (['completed', 'failed', 'cancelled'].includes(d.status)) { clearInterval(iv); pollingTasks.current.delete(taskId) }
         }
       } catch { clearInterval(iv); pollingTasks.current.delete(taskId) }
@@ -154,6 +162,7 @@ export default function Dashboard() {
 
   const handleNewTask = () => {
     setCurrentTask(null)
+    currentTaskRef.current = null
     resetAgents()
     setPapers([], 0)
     setTimeout(() => inputRef.current?.focus(), 100)
@@ -161,12 +170,19 @@ export default function Dashboard() {
 
   const handleTaskCreated = (task: Task) => {
     setCurrentTask(task)
+    currentTaskRef.current = task
+    const latestTasks = usePaperStore.getState().tasks
+    setTasks([task, ...latestTasks.filter((t) => t.id !== task.id)])
     fetchTasks()
     startPolling(task.id)
   }
 
   const handleTaskUpdated = (task: Task) => {
     setCurrentTask(task)
+    currentTaskRef.current = task
+    const latestTasks = usePaperStore.getState().tasks
+    const hasTask = latestTasks.some((t) => t.id === task.id)
+    setTasks(hasTask ? latestTasks.map((t) => t.id === task.id ? task : t) : [task, ...latestTasks])
     fetchPapers(task.id)
     if (task.status === 'running') startPolling(task.id)
   }

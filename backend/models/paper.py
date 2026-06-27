@@ -25,6 +25,14 @@ class Paper(BaseModel):
     venue: str | None = None
     is_open_access: bool = False
     topics: list[str] = []
+    paper_type: str | None = None
+    subtopics: list[str] = []
+    learning_role: str | None = None
+    difficulty: str | None = None
+    method_tags: list[str] = []
+    quality_tags: list[str] = []
+    annotation_reason: str | None = None
+    search_subtopic: str | None = None
     local_pdf_path: str | None = None
     download_status: str = "pending"
     relevance_score: float | None = None
