@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Paper } from '../stores/paperStore'
 import PaperCard from './PaperCard'
-import { ChevronLeft, ChevronRight, Search, Download, AlertCircle, FileText, ArrowDownWideNarrow, ArrowUpNarrowWide, Star, Sparkles } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Search, Download, AlertCircle, FileText, ArrowDownWideNarrow, ArrowUpNarrowWide, Star, Sparkles } from 'lucide-react'
 
 interface Props {
   papers: Paper[]
@@ -30,6 +30,7 @@ export default function PaperDrawer({ papers, total, downloaded, failed }: Props
   const [isDragging, setIsDragging] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [sortMode, setSortMode] = useState<SortMode>('relevance')
+  const [coreCollapsed, setCoreCollapsed] = useState(false)
   const startX = useRef(0)
   const startW = useRef(0)
 
@@ -130,16 +131,24 @@ export default function PaperDrawer({ papers, total, downloaded, failed }: Props
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
         {corePapers.length > 0 && (
           <div className="rounded-2xl border border-amber-100 bg-amber-50/60 p-3">
-            <div className="flex items-center justify-between gap-2 mb-2">
+            <button
+              onClick={() => setCoreCollapsed((value) => !value)}
+              className="flex w-full items-center justify-between gap-2"
+            >
               <div className="flex items-center gap-1.5">
                 <Sparkles size={13} className="text-amber-500" />
                 <span className="text-xs font-bold text-amber-800">核心论文池</span>
               </div>
-              <span className="text-[10px] text-amber-600">{corePapers.length} 篇优先看</span>
-            </div>
-            <div className="space-y-2">
-              {corePapers.map((p) => <PaperCard key={p.id} paper={p} featured compact />)}
-            </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-amber-600">{corePapers.length} 篇优先看</span>
+                <ChevronDown size={13} className={`text-amber-500 transition-transform ${coreCollapsed ? '-rotate-90' : ''}`} />
+              </div>
+            </button>
+            {!coreCollapsed && (
+              <div className="mt-2 space-y-2">
+                {corePapers.map((p) => <PaperCard key={p.id} paper={p} featured compact />)}
+              </div>
+            )}
           </div>
         )}
         {regularPapers.length > 0 ? regularPapers.map((p) => <PaperCard key={p.id} paper={p} />) : sorted.length === 0 ? (

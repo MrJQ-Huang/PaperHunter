@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { usePaperStore, Paper, Task } from '../stores/paperStore'
 import PaperCard from '../components/PaperCard'
-import { BookOpen, RefreshCw, ChevronLeft, ChevronRight, Search, Trash2, X, Download, AlertCircle, Clock, ArrowDownWideNarrow, ArrowUpNarrowWide, Star, GitBranch, Network, CalendarDays, Layers3, Sparkles } from 'lucide-react'
+import { BookOpen, RefreshCw, ChevronDown, ChevronLeft, ChevronRight, Search, Trash2, X, Download, AlertCircle, Clock, ArrowDownWideNarrow, ArrowUpNarrowWide, Star, GitBranch, Network, CalendarDays, Layers3, Sparkles, SlidersHorizontal, Eye } from 'lucide-react'
 
 const SOURCE_OPTIONS = [
   { value: '', label: '全部来源' },
@@ -86,6 +86,8 @@ const pickCorePapers = (papers: Paper[]) => {
   return (strong.length > 0 ? strong : ranked.slice(0, 3)).slice(0, 6)
 }
 
+const scoreOf = (paper: Paper) => paper.relevance_score ?? 0
+
 const normalizeTopic = (value: string) => value.trim().toLowerCase()
 
 const asStringList = (value: unknown): string[] => {
@@ -117,14 +119,29 @@ export default function PaperList() {
   const [downloading, setDownloading] = useState(false)
   const [graphPapers, setGraphPapers] = useState<Paper[]>([])
   const [graphLoading, setGraphLoading] = useState(false)
+  const [coreCollapsed, setCoreCollapsed] = useState(false)
+  const [lowRelevanceCollapsed, setLowRelevanceCollapsed] = useState(true)
+  const [scoreThreshold, setScoreThreshold] = useState(5)
   const perPage = 20
   const activeTask = useMemo(
     () => tasks.find((task) => task.id === selectedTaskId) || tasks[0] || null,
     [tasks, selectedTaskId]
   )
   const activeTaskId = selectedTaskId || activeTask?.id || ''
-  const corePapers = useMemo(() => pickCorePapers(graphPapers), [graphPapers])
-  const corePaperIds = useMemo(() => new Set(corePapers.map((paper) => paper.id)), [corePapers])
+  const relevantGraphPapers = useMemo(
+    () => graphPapers.filter((paper) => scoreOf(paper) >= scoreThreshold),
+    [graphPapers, scoreThreshold]
+  )
+  const lowRelevancePapers = useMemo(
+    () => graphPapers.filter((paper) => scoreOf(paper) < scoreThreshold),
+    [graphPapers, scoreThreshold]
+  )
+  const visiblePapers = useMemo(
+    () => papers.filter((paper) => scoreOf(paper) >= scoreThreshold),
+    [papers, scoreThreshold]
+  )
+  const hiddenPageCount = papers.length - visiblePapers.length
+  const corePapers = useMemo(() => pickCorePapers(relevantGraphPapers), [relevantGraphPapers])
 
   const fetchPapers = useCallback(async () => {
     setLoading(true)
@@ -233,10 +250,13 @@ export default function PaperList() {
   }
 
   const toggleSelectAll = () => {
-    if (selectedPapers.size === papers.length) {
+    if (visiblePapers.length === 0) return
+    const visibleIds = visiblePapers.map(p => p.id)
+    const allVisibleSelected = visibleIds.every((id) => selectedPapers.has(id))
+    if (allVisibleSelected) {
       setSelectedPapers(new Set())
     } else {
-      setSelectedPapers(new Set(papers.map(p => p.id)))
+      setSelectedPapers(new Set(visibleIds))
     }
   }
 
@@ -306,7 +326,7 @@ export default function PaperList() {
       })
     })
 
-    graphPapers.forEach((paper) => {
+    relevantGraphPapers.forEach((paper) => {
       const names = [
         ...asStringList(paper.subtopics),
         paper.search_subtopic || '',
@@ -343,7 +363,7 @@ export default function PaperList() {
       }
     }).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
 
-    const typeCounts = graphPapers.reduce<Record<string, number>>((acc, paper) => {
+    const typeCounts = relevantGraphPapers.reduce<Record<string, number>>((acc, paper) => {
       const type = paper.paper_type || 'unknown'
       acc[type] = (acc[type] || 0) + 1
       return acc
@@ -354,12 +374,12 @@ export default function PaperList() {
       goal: activeTask?.search_plan?.goal || activeTask?.query || '',
       branches,
       typeCounts,
-      yearRange: graphPapers
+      yearRange: relevantGraphPapers
         .map(getPaperYear)
         .filter((year): year is number => year !== null)
         .sort((a, b) => a - b),
     }
-  }, [activeTask, graphPapers])
+  }, [activeTask, relevantGraphPapers])
 
   const totalPages = Math.ceil(total / perPage)
 
@@ -468,6 +488,56 @@ export default function PaperList() {
           />
         </div>
 
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <span className="font-medium text-sm text-gray-800 flex items-center gap-1.5">
+              <SlidersHorizontal size={14} className="text-violet-500" />
+              相关性阈值
+            </span>
+            <span className="text-xs font-semibold text-violet-600">{scoreThreshold.toFixed(1)}+</span>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="8"
+            step="0.5"
+            value={scoreThreshold}
+            onChange={(e) => setScoreThreshold(Number(e.target.value))}
+            className="w-full accent-violet-500"
+          />
+          <div className="mt-2 grid grid-cols-4 gap-1">
+            {[
+              { value: 0, label: '全部' },
+              { value: 3, label: '宽松' },
+              { value: 5, label: '推荐' },
+              { value: 6.5, label: '严格' },
+            ].map((item) => (
+              <button
+                key={item.value}
+                onClick={() => setScoreThreshold(item.value)}
+                className={`px-2 py-1 text-[11px] rounded-lg transition-colors ${
+                  scoreThreshold === item.value ? 'bg-violet-50 text-violet-600 font-medium' : 'text-gray-500 hover:bg-gray-50'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+            <div className="rounded-lg bg-emerald-50 px-2 py-1.5">
+              <span className="block text-emerald-500">保留</span>
+              <span className="font-semibold text-emerald-700">{relevantGraphPapers.length}</span>
+            </div>
+            <button
+              onClick={() => setLowRelevanceCollapsed((value) => !value)}
+              className="rounded-lg bg-gray-50 px-2 py-1.5 text-left hover:bg-gray-100"
+            >
+              <span className="block text-gray-400">隔离</span>
+              <span className="font-semibold text-gray-700">{lowRelevancePapers.length}</span>
+            </button>
+          </div>
+        </div>
+
         {/* 排序 */}
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <span className="font-medium text-sm text-gray-800 block mb-2">排序方式</span>
@@ -500,6 +570,11 @@ export default function PaperList() {
             <BookOpen size={20} className="text-primary-500" />
             <h2 className="font-semibold text-gray-800">论文库</h2>
             <span className="text-sm text-gray-400">共 {total} 篇</span>
+            {scoreThreshold > 0 && (
+              <span className="text-xs text-violet-500 bg-violet-50 rounded-full px-2 py-0.5">
+                当前页显示 {visiblePapers.length} 篇，隐藏 {hiddenPageCount} 篇
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             {/* 搜索框 */}
@@ -522,13 +597,13 @@ export default function PaperList() {
               )}
             </div>
             {/* 全选/下载按钮 */}
-            {papers.length > 0 && (
+            {visiblePapers.length > 0 && (
               <>
                 <button
                   onClick={toggleSelectAll}
                   className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 border border-gray-200 rounded-lg"
                 >
-                  {selectedPapers.size === papers.length ? '取消全选' : '全选'}
+                  {visiblePapers.every((paper) => selectedPapers.has(paper.id)) ? '取消全选' : '全选'}
                 </button>
                 {selectedPapers.size > 0 && (
                   <button
@@ -606,12 +681,16 @@ export default function PaperList() {
                 <div className="font-semibold text-gray-900 text-sm line-clamp-2">{graphData.domain}</div>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
                   <div>
-                    <span className="block text-gray-400">论文</span>
-                    <span className="font-semibold text-gray-700">{graphPapers.length}</span>
+                    <span className="block text-gray-400">保留论文</span>
+                    <span className="font-semibold text-gray-700">{relevantGraphPapers.length}</span>
                   </div>
                   <div>
                     <span className="block text-gray-400">分支</span>
                     <span className="font-semibold text-gray-700">{graphData.branches.length}</span>
+                  </div>
+                  <div className="col-span-2">
+                    <span className="block text-gray-400">隔离</span>
+                    <span className="font-semibold text-gray-700">{lowRelevancePapers.length} 篇低相关</span>
                   </div>
                   <div className="col-span-2">
                     <span className="block text-gray-400">时间</span>
@@ -729,7 +808,7 @@ export default function PaperList() {
 
         {corePapers.length > 0 && (
           <div className="bg-amber-50/70 border border-amber-100 rounded-xl p-4 mb-4">
-            <div className="flex items-start justify-between gap-3 mb-3">
+            <div className={`flex items-start justify-between gap-3 ${coreCollapsed ? '' : 'mb-3'}`}>
               <div>
                 <div className="flex items-center gap-2">
                   <Sparkles size={16} className="text-amber-500" />
@@ -742,28 +821,93 @@ export default function PaperList() {
                   根据当前任务的语义评分自动提取，优先展示最可能支撑领域脉络的关键论文。
                 </p>
               </div>
-              <button
-                onClick={() => { setSort('relevance'); setSearch(''); setSubtopic(''); setPage(1) }}
-                className="shrink-0 px-3 py-1.5 text-xs rounded-lg bg-white/80 text-amber-700 border border-amber-100 hover:bg-white"
-              >
-                按评分查看全部
-              </button>
+              <div className="shrink-0 flex items-center gap-2">
+                <button
+                  onClick={() => { setSort('relevance'); setSearch(''); setSubtopic(''); setPage(1) }}
+                  className="px-3 py-1.5 text-xs rounded-lg bg-white/80 text-amber-700 border border-amber-100 hover:bg-white"
+                >
+                  按评分查看全部
+                </button>
+                <button
+                  onClick={() => setCoreCollapsed((value) => !value)}
+                  className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg bg-white/80 text-amber-700 border border-amber-100 hover:bg-white"
+                >
+                  {coreCollapsed ? '展开' : '收起'}
+                  <ChevronDown size={13} className={`transition-transform ${coreCollapsed ? '-rotate-90' : ''}`} />
+                </button>
+              </div>
             </div>
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-              {corePapers.map((paper) => (
-                <PaperCard
-                  key={paper.id}
-                  paper={paper}
-                  featured
-                  compact
-                  onDownload={handleDownload}
-                  onEdit={setEditingPaper}
-                  onDelete={handleDelete}
-                  selected={selectedPapers.has(paper.id)}
-                  onToggleSelect={toggleSelect}
-                />
-              ))}
+            {!coreCollapsed && (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                {corePapers.map((paper) => (
+                  <PaperCard
+                    key={paper.id}
+                    paper={paper}
+                    featured
+                    compact
+                    onDownload={handleDownload}
+                    onEdit={setEditingPaper}
+                    onDelete={handleDelete}
+                    selected={selectedPapers.has(paper.id)}
+                    onToggleSelect={toggleSelect}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {lowRelevancePapers.length > 0 && (
+          <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mb-4">
+            <div className={`flex items-start justify-between gap-3 ${lowRelevanceCollapsed ? '' : 'mb-3'}`}>
+              <div>
+                <div className="flex items-center gap-2">
+                  <Eye size={16} className="text-gray-400" />
+                  <h3 className="font-semibold text-gray-800 text-sm">低相关隔离区</h3>
+                  <span className="text-[11px] text-gray-500 bg-white rounded-full px-2 py-0.5">
+                    {lowRelevancePapers.length} 篇已从图谱和主列表隐藏
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  这些论文评分低于当前阈值，暂不参与分支主视图；展开后仍可人工复核。
+                </p>
+              </div>
+              <div className="shrink-0 flex items-center gap-2">
+                <button
+                  onClick={() => setScoreThreshold(0)}
+                  className="px-3 py-1.5 text-xs rounded-lg bg-white text-gray-600 border border-gray-200 hover:bg-gray-50"
+                >
+                  显示全部
+                </button>
+                <button
+                  onClick={() => setLowRelevanceCollapsed((value) => !value)}
+                  className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg bg-white text-gray-600 border border-gray-200 hover:bg-gray-50"
+                >
+                  {lowRelevanceCollapsed ? '展开' : '收起'}
+                  <ChevronDown size={13} className={`transition-transform ${lowRelevanceCollapsed ? '-rotate-90' : ''}`} />
+                </button>
+              </div>
             </div>
+            {!lowRelevanceCollapsed && (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                {lowRelevancePapers
+                  .slice()
+                  .sort((a, b) => scoreOf(b) - scoreOf(a))
+                  .slice(0, 20)
+                  .map((paper) => (
+                    <PaperCard
+                      key={paper.id}
+                      paper={paper}
+                      compact
+                      onDownload={handleDownload}
+                      onEdit={setEditingPaper}
+                      onDelete={handleDelete}
+                      selected={selectedPapers.has(paper.id)}
+                      onToggleSelect={toggleSelect}
+                    />
+                  ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -772,20 +916,19 @@ export default function PaperList() {
             <RefreshCw size={24} className="mx-auto mb-2 animate-spin" />
             加载中...
           </div>
-        ) : papers.length === 0 ? (
+        ) : visiblePapers.length === 0 ? (
           <div className="text-center py-12 text-gray-400">
             <BookOpen size={48} className="mx-auto mb-4 text-gray-300" />
-            <p>{search ? '未找到匹配的论文' : '暂无论文'}</p>
-            <p className="text-sm mt-1">{search ? '请尝试其他关键词' : '请先在任务监控页面搜索论文'}</p>
+            <p>{papers.length > 0 ? '当前阈值下没有可显示论文' : search ? '未找到匹配的论文' : '暂无论文'}</p>
+            <p className="text-sm mt-1">{papers.length > 0 ? '降低相关性阈值即可查看被隔离论文' : search ? '请尝试其他关键词' : '请先在任务监控页面搜索论文'}</p>
           </div>
         ) : (
           <>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {papers.map((paper) => (
+              {visiblePapers.map((paper) => (
                 <PaperCard
                   key={paper.id}
                   paper={paper}
-                  featured={corePaperIds.has(paper.id)}
                   onDownload={handleDownload}
                   onEdit={setEditingPaper}
                   onDelete={handleDelete}
