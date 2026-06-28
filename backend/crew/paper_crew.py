@@ -89,6 +89,14 @@ class PaperCrew:
                 "indexed_count": len(papers),
                 "message": "搜索结果已先行入库，正在补充语义标注",
             })
+            await self._notify("search", "done", f"已入库 {len(papers)} 篇论文", 100)
+            await self._notify("filter", "working", "正在后台补充语义评分和标签...")
+            await self._notify("chat", "working", "论文已可查看，后台标注中")
+            await self._send_chat(
+                f"已先入库 {len(papers)} 篇论文，右侧论文库现在可以先查看和筛选。\n"
+                "我会继续在后台补充语义评分、分支标签和论文类型标注。",
+                suggestions=["查看论文库", "继续等待标注完成"],
+            )
 
             # 自动语义排序与标签标注，入库后即可按综述/基础/子方向筛选。
             await self._notify("filter", "working", "正在语义排序并标注论文...")
@@ -109,7 +117,7 @@ class PaperCrew:
             self.task.status = TaskStatus.REVIEWING
             await update_task(self.task)
             await self._send_chat(
-                f"搜索完成！共找到 {len(papers)} 篇论文，已入库。\n"
+                f"语义标注完成！共整理 {len(papers)} 篇论文。\n"
                 f"请前往论文库筛选需要下载的论文，或让 Agent 帮你智能筛选。",
                 suggestions=["前往论文库筛选", "让 Agent 帮我筛选", "一键全部下载"],
             )
@@ -158,32 +166,45 @@ class PaperCrew:
         """三层漏斗搜索：关键词搜索 → 引用链补充 → 去重"""
         from ..utils.query_translator import translate_query, generate_search_plan
         from ..tools.semantic_scholar_tool import find_paper_by_title, get_paper_references
+        from ..utils.plan_repairer import repair_search_plan
+        from ..utils.plan_validator import validate_search_plan
 
         sources = self.task.sources or [PaperSource.ARXIV, PaperSource.SEMANTIC_SCHOLAR, PaperSource.OPENALEX, PaperSource.CROSSREF]
         original_query = self.task.query
+        search_plan = self.task.filters.get("_execution_plan") or self.task.search_plan
 
-        # 判断是否需要翻译
-        ascii_ratio = sum(1 for c in original_query if ord(c) < 128) / max(len(original_query), 1)
-        needs_translate = ascii_ratio < 0.7
-
-        if needs_translate:
-            await self._notify("search", "working", "正在翻译检索词...")
-            await self._log("search", "正在翻译检索词...")
-            translated = await translate_query(original_query)
-            await self._log("search", f"✓ 检索词已翻译: {translated}")
-            await self._send_chat(f"已将检索词翻译为：{translated}")
+        if search_plan:
+            translated = search_plan.get("query") or original_query
+            await self._log("search", f"✓ 使用已校验执行计划: {translated}")
         else:
-            translated = original_query
-            await self._log("search", f"✓ 检索词已是英文，跳过翻译: {translated}")
+            # 判断是否需要翻译
+            ascii_ratio = sum(1 for c in original_query if ord(c) < 128) / max(len(original_query), 1)
+            needs_translate = ascii_ratio < 0.7
 
-        # LLM 生成结构化搜索方案；如果用户已确认过方案，优先使用完整 research_intent。
+            if needs_translate:
+                await self._notify("search", "working", "正在翻译检索词...")
+                await self._log("search", "正在翻译检索词...")
+                translated = await translate_query(original_query)
+                await self._log("search", f"✓ 检索词已翻译: {translated}")
+                await self._send_chat(f"已将检索词翻译为：{translated}")
+            else:
+                translated = original_query
+                await self._log("search", f"✓ 检索词已是英文，跳过翻译: {translated}")
+
+        # Search Agent only consumes a validated execution plan.
         await self._notify("search", "working", "正在制定搜索策略...")
         await self._log("search", "正在分析研究意图，制定搜索策略...")
-        search_plan = (
-            self.task.filters.get("_research_intent")
-            or self.task.search_plan
-            or await generate_search_plan(translated)
-        )
+        if not search_plan:
+            search_plan = await generate_search_plan(translated)
+
+        validation = validate_search_plan(search_plan)
+        if validation.blocking:
+            await self._log("search", f"执行计划校验失败，正在修复: {', '.join(validation.issues)}")
+            search_plan = await repair_search_plan(original_query, search_plan, validation.issues)
+
+        self.task.filters["_execution_plan"] = search_plan
+        self.task.search_plan = search_plan
+        await update_task(self.task)
 
         core_concepts = search_plan.get("core_concepts", [])
         field_terms = search_plan.get("field_terms", [])
@@ -328,6 +349,12 @@ class PaperCrew:
             all_papers = kept
             await self._log("search", f"歧义排除: {before} → {len(all_papers)}")
 
+        before_anchor = len(all_papers)
+        anchored = self._filter_by_anchor_terms(all_papers, search_plan)
+        if len(anchored) != before_anchor:
+            await self._log("search", f"锚点相关性过滤: {before_anchor} → {len(anchored)}")
+            all_papers = anchored
+
         # 去重
         deduplicated = deduplicate(all_papers)
         await self._log("search", f"去重后剩余 {len(deduplicated)} 篇")
@@ -395,7 +422,7 @@ class PaperCrew:
         # 保存核心概念到 task.filters，供 filter 阶段使用
         if core_concepts:
             self.task.filters["_core_concepts"] = core_concepts
-        self.task.filters["_research_intent"] = search_plan
+        self.task.filters["_execution_plan"] = search_plan
 
         return deduplicated
 
@@ -500,7 +527,7 @@ class PaperCrew:
             await self._notify("filter", "working", "正在进行 LLM 语义评分...")
             await self._log("filter", f"第二阶段：LLM 语义评分（{len(filtered)} 篇）...")
 
-            intent = filters.get("_research_intent") or self.task.search_plan or {"query": self.task.query}
+            intent = filters.get("_execution_plan") or self.task.search_plan or filters.get("_research_intent") or {"query": self.task.query}
             scoring_query = json.dumps(intent, ensure_ascii=False) if isinstance(intent, dict) else self.task.query
             llm_scores = await llm_score_papers(scoring_query, filtered)
 
@@ -562,6 +589,46 @@ class PaperCrew:
             )
 
         return filtered
+
+    def _filter_by_anchor_terms(self, papers: list[Paper], search_plan: dict) -> list[Paper]:
+        """Drop clearly unrelated records when the plan has concrete domain anchors."""
+        if not papers:
+            return papers
+
+        anchors = set()
+        for value in search_plan.get("core_concepts", []) + search_plan.get("field_terms", []):
+            self._add_anchor_terms(anchors, value)
+        for subtopic in search_plan.get("subtopics", []) or []:
+            for key in ("name", "required_terms", "optional_terms"):
+                value = subtopic.get(key)
+                if isinstance(value, list):
+                    for item in value:
+                        self._add_anchor_terms(anchors, item)
+                else:
+                    self._add_anchor_terms(anchors, value)
+
+        anchors = {a for a in anchors if len(a) >= 3}
+        if len(anchors) < 3:
+            return papers
+
+        kept = []
+        for paper in papers:
+            text = f"{paper.title} {paper.abstract} {paper.venue or ''}".lower()
+            if any(anchor in text for anchor in anchors):
+                kept.append(paper)
+
+        # Avoid wiping out a niche query entirely due to sparse abstracts.
+        min_keep = max(5, int(len(papers) * 0.1))
+        return kept if len(kept) >= min_keep else papers
+
+    def _add_anchor_terms(self, anchors: set[str], value):
+        if not value:
+            return
+        text = str(value).lower()
+        for raw in [text, *text.replace("(", " ").replace(")", " ").replace('"', " ").split()]:
+            term = raw.strip(" ,.;:[]{}|")
+            if len(term) >= 3 and not any("\u4e00" <= c <= "\u9fff" for c in term):
+                anchors.add(term)
 
     def _apply_fallback_annotation(self, paper: Paper):
         """LLM 未返回标签时，用标题/摘要/元数据补一层基础标注。"""

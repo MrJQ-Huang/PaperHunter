@@ -3,10 +3,13 @@ from pathlib import Path
 
 
 class Settings(BaseSettings):
-    # LLM 配置 (Anthropic 兼容 API)
+    # LLM 配置
+    # anthropic: Anthropic Messages 兼容接口；openai: OpenAI Chat Completions 兼容接口
+    llm_api_type: str = "anthropic"
     llm_api_key: str = "tp-placeholder"
     llm_base_url: str = "https://token-plan-cn.xiaomimimo.com/anthropic"
     llm_model: str = "xiaomi/mimo-v2.5-pro"
+    cc_switch_config_path: str = ""
 
     # 学术 API 密钥（可选）
     semantic_scholar_api_key: str = ""

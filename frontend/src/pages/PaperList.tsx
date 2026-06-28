@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { usePaperStore, Paper, Task } from '../stores/paperStore'
 import PaperCard from '../components/PaperCard'
-import { BookOpen, RefreshCw, ChevronLeft, ChevronRight, Search, Trash2, X, Download, AlertCircle, Clock, ArrowDownWideNarrow, ArrowUpNarrowWide, Star, GitBranch, Network, CalendarDays, Layers3 } from 'lucide-react'
+import { BookOpen, RefreshCw, ChevronLeft, ChevronRight, Search, Trash2, X, Download, AlertCircle, Clock, ArrowDownWideNarrow, ArrowUpNarrowWide, Star, GitBranch, Network, CalendarDays, Layers3, Sparkles } from 'lucide-react'
 
 const SOURCE_OPTIONS = [
   { value: '', label: '全部来源' },
@@ -80,6 +80,12 @@ const getPaperYear = (paper: Paper) => {
   return Number.isFinite(year) ? year : null
 }
 
+const pickCorePapers = (papers: Paper[]) => {
+  const ranked = [...papers].sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0))
+  const strong = ranked.filter((p) => (p.relevance_score || 0) >= 6.5)
+  return (strong.length > 0 ? strong : ranked.slice(0, 3)).slice(0, 6)
+}
+
 const normalizeTopic = (value: string) => value.trim().toLowerCase()
 
 const asStringList = (value: unknown): string[] => {
@@ -117,6 +123,8 @@ export default function PaperList() {
     [tasks, selectedTaskId]
   )
   const activeTaskId = selectedTaskId || activeTask?.id || ''
+  const corePapers = useMemo(() => pickCorePapers(graphPapers), [graphPapers])
+  const corePaperIds = useMemo(() => new Set(corePapers.map((paper) => paper.id)), [corePapers])
 
   const fetchPapers = useCallback(async () => {
     setLoading(true)
@@ -719,6 +727,46 @@ export default function PaperList() {
           </div>
         </div>
 
+        {corePapers.length > 0 && (
+          <div className="bg-amber-50/70 border border-amber-100 rounded-xl p-4 mb-4">
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Sparkles size={16} className="text-amber-500" />
+                  <h3 className="font-semibold text-gray-900 text-sm">核心论文池</h3>
+                  <span className="text-[11px] text-amber-700 bg-amber-100 rounded-full px-2 py-0.5">
+                    {corePapers.length} 篇优先阅读
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  根据当前任务的语义评分自动提取，优先展示最可能支撑领域脉络的关键论文。
+                </p>
+              </div>
+              <button
+                onClick={() => { setSort('relevance'); setSearch(''); setSubtopic(''); setPage(1) }}
+                className="shrink-0 px-3 py-1.5 text-xs rounded-lg bg-white/80 text-amber-700 border border-amber-100 hover:bg-white"
+              >
+                按评分查看全部
+              </button>
+            </div>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+              {corePapers.map((paper) => (
+                <PaperCard
+                  key={paper.id}
+                  paper={paper}
+                  featured
+                  compact
+                  onDownload={handleDownload}
+                  onEdit={setEditingPaper}
+                  onDelete={handleDelete}
+                  selected={selectedPapers.has(paper.id)}
+                  onToggleSelect={toggleSelect}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
         {loading ? (
           <div className="text-center py-12 text-gray-400">
             <RefreshCw size={24} className="mx-auto mb-2 animate-spin" />
@@ -737,6 +785,7 @@ export default function PaperList() {
                 <PaperCard
                   key={paper.id}
                   paper={paper}
+                  featured={corePaperIds.has(paper.id)}
                   onDownload={handleDownload}
                   onEdit={setEditingPaper}
                   onDelete={handleDelete}

@@ -7,6 +7,7 @@ interface Props {
 const statusLabels: Record<string, { label: string; color: string }> = {
   pending: { label: '等待中', color: 'bg-gray-100 text-gray-600' },
   running: { label: '执行中', color: 'bg-blue-100 text-blue-600' },
+  reviewing: { label: '待筛选', color: 'bg-purple-100 text-purple-600' },
   paused: { label: '已暂停', color: 'bg-yellow-100 text-yellow-600' },
   completed: { label: '已完成', color: 'bg-green-100 text-green-600' },
   failed: { label: '失败', color: 'bg-red-100 text-red-600' },
@@ -14,7 +15,10 @@ const statusLabels: Record<string, { label: string; color: string }> = {
 }
 
 export default function TaskProgress({ task }: Props) {
-  const statusInfo = statusLabels[task.status] || statusLabels.pending
+  const statusInfo =
+    task.status === 'running' && (task.total_papers_found || 0) > 0
+      ? { label: '标注中', color: 'bg-sky-100 text-sky-600' }
+      : statusLabels[task.status] || statusLabels.pending
   const total = task.total_papers_found || 0
   const filtered = task.papers_after_filter || 0
   const downloaded = task.papers_downloaded || 0

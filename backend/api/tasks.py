@@ -9,6 +9,7 @@ from ..models.paper import PaperSource
 from ..models.message import Message, MessageRole
 from ..database import insert_task, get_task, get_tasks, update_task, delete_task, insert_message
 from ..crew.paper_crew import PaperCrew
+from ..services.search_planning_service import prepare_search_execution
 
 router = APIRouter()
 
@@ -68,40 +69,15 @@ async def create_task(req: CreateTaskRequest):
 
 async def _extract_topic(user_input: str) -> str:
     """从用户的自然语言中提取纯研究主题，去掉客套话和指令性语句"""
-    import aiohttp
-    from ..config import settings
-
-    headers = {
-        "x-api-key": settings.llm_api_key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-
-    body = {
-        "model": settings.llm_model,
-        "max_tokens": 128,
-        "system": "从用户输入中提取论文检索主题。去掉客套话和纯操作话，但必须保留研究对象、已给出的子方向、时间/排序要求，以及“忘了/不确定/帮我想/待确认”这类补全线索。只输出适合作为任务标题的短语，不要解释。\n\n示例：\n输入：请你帮我检索 时域天线测量以及探头补偿的相关论文\n输出：时域天线测量 探头补偿\n\n输入：找一下transformer在NLP中的应用\n输出：transformer NLP 应用\n\n输入：你好 我想找具身智能领域的大脑的三个大类的论文，一个是VLA 一个是世界模型 还有一个我忘了。按起始时间到现在的顺序来找\n输出：具身智能大脑 VLA 世界模型 第三方向待确认 时间线论文\n\n输入：search for papers about deep learning in medical imaging\n输出：deep learning medical imaging",
-        "messages": [
-            {"role": "user", "content": user_input}
-        ],
-    }
-
-    url = f"{settings.llm_base_url}/v1/messages"
+    from ..utils.llm_client import call_llm
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=body, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status != 200:
-                    return user_input
-                data = await resp.json()
-
-        content = ""
-        for block in data.get("content", []):
-            if block.get("type") == "text":
-                content += block.get("text", "")
+        content = await call_llm(
+            [{"role": "user", "content": user_input}],
+            system="从用户输入中提取论文检索主题。去掉客套话和纯操作话，但必须保留研究对象、已给出的子方向、时间/排序要求，以及“忘了/不确定/帮我想/待确认”这类补全线索。只输出适合作为任务标题的短语，不要解释。\n\n示例：\n输入：请你帮我检索 时域天线测量以及探头补偿的相关论文\n输出：时域天线测量 探头补偿\n\n输入：找一下transformer在NLP中的应用\n输出：transformer NLP 应用\n\n输入：你好 我想找具身智能领域的大脑的三个大类的论文，一个是VLA 一个是世界模型 还有一个我忘了。按起始时间到现在的顺序来找\n输出：具身智能大脑 VLA 世界模型 第三方向待确认 时间线论文\n\n输入：search for papers about deep learning in medical imaging\n输出：deep learning medical imaging",
+            max_tokens=128,
+            timeout=10,
+        )
 
         result = content.strip().strip('"').strip("'")
         return result if result else user_input
@@ -113,19 +89,9 @@ async def _extract_topic(user_input: str) -> str:
 async def _generate_welcome(query: str, original_input: str | None = None) -> tuple[str, list[str]]:
     """用 LLM 分析用户查询，生成有针对性的欢迎消息"""
     import json
-    import aiohttp
-    from ..config import settings
+    from ..utils.llm_client import call_llm
 
-    headers = {
-        "x-api-key": settings.llm_api_key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-
-    body = {
-        "model": settings.llm_model,
-        "max_tokens": 1024,
-        "system": """你是 PaperHunter 的学术搜索助手。用户刚开始一个新的论文检索任务，你需要处理好首轮复杂输入。
+    system = """你是 PaperHunter 的学术搜索助手。用户刚开始一个新的论文检索任务，你需要处理好首轮复杂输入。
 
 1. 理解并用专业的学术语言复述用户的研究需求
 2. 拆解出 2-4 个具体的子研究方向
@@ -138,28 +104,15 @@ async def _generate_welcome(query: str, original_input: str | None = None) -> tu
 
 回复格式（严格遵守）：
 先写正文（150字以内，中文），然后换行写：
-[SUGGESTIONS: ["选项1", "选项2", "选项3"]]""",
-        "messages": [
-            {"role": "user", "content": f"原始输入：{original_input or query}\n\n提取后的主题：{query}"}
-        ],
-    }
-
-    url = f"{settings.llm_base_url}/v1/messages"
+[SUGGESTIONS: ["选项1", "选项2", "选项3"]]"""
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=body, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=20),
-            ) as resp:
-                if resp.status != 200:
-                    raise Exception(f"API error {resp.status}")
-                data = await resp.json()
-
-        content = ""
-        for block in data.get("content", []):
-            if block.get("type") == "text":
-                content += block.get("text", "")
+        content = await call_llm(
+            [{"role": "user", "content": f"原始输入：{original_input or query}\n\n提取后的主题：{query}"}],
+            system=system,
+            max_tokens=1024,
+            timeout=20,
+        )
 
         # 提取建议
         import re
@@ -236,9 +189,10 @@ async def generate_plan(task_id: str):
 async def _build_search_plan(task: Task, insert_plan_message: bool = True) -> tuple[Task, dict]:
     """从对话生成计划并写入 task。供显式按钮和聊天确认自动启动共用。"""
     import json
-    import aiohttp
-    from ..config import settings
     from ..database import get_messages
+    from ..utils.llm_client import call_llm
+    from ..utils.plan_repairer import repair_search_plan
+    from ..utils.plan_validator import validate_search_plan
 
     # 读取对话历史（只取最近 6 条，每条截断 100 字，减少 token 用量）
     history = await get_messages(task.id, page=1, per_page=50)
@@ -250,16 +204,7 @@ async def _build_search_plan(task: Task, insert_plan_message: bool = True) -> tu
         conversation.append(f"{role}: {text}")
     conversation_text = "\n".join(conversation)
 
-    headers = {
-        "x-api-key": settings.llm_api_key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-
-    body = {
-        "model": settings.llm_model,
-        "max_tokens": 4096,
-        "system": """从对话中提取论文检索方案，输出纯 JSON。不要只生成一个短关键词，要构建可执行的研究意图画像。
+    system = """从对话中提取论文检索方案，输出纯 JSON。不要只生成一个短关键词，要构建可执行的研究意图画像。
 
 JSON 格式：
 {
@@ -308,38 +253,21 @@ JSON 格式：
 3. 不要强迫所有 query 都包含缩写词；要覆盖同义表达、上位概念和代表系统名。
 4. 对缩写歧义要给 exclude_terms，例如 VLA 排除 Very Large Array、radio astronomy、telescope。
 5. subtopics 生成 4-7 个，每个 query 尽量互补。
-6. 只输出 JSON。""",
-        "messages": [
-            {"role": "user", "content": f"对话：\n{conversation_text}\n\n输出JSON："}
-        ],
-    }
-
-    url = f"{settings.llm_base_url}/v1/messages"
+6. 只输出 JSON。"""
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=body, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    raise Exception(f"LLM API error {resp.status}: {error_text[:200]}")
-                data = await resp.json()
-                # 调试日志
-                import logging
-                logging.info(f"generate-plan LLM response: stop_reason={data.get('stop_reason')}, content_count={len(data.get('content', []))}")
-
-        content = ""
-        for block in data.get("content", []):
-            if block.get("type") == "text":
-                content += block.get("text", "")
+        content = await call_llm(
+            [{"role": "user", "content": f"对话：\n{conversation_text}\n\n输出JSON："}],
+            system=system,
+            max_tokens=4096,
+            timeout=60,
+        )
 
         if not content.strip():
             # 打印完整响应帮助调试
             import logging
-            logging.warning(f"LLM 返回空内容. stop_reason={data.get('stop_reason')}, usage={data.get('usage')}, content blocks={data.get('content')}")
-            raise Exception(f"LLM 返回空内容 (stop_reason={data.get('stop_reason')})")
+            logging.warning("LLM 返回空内容")
+            raise Exception("LLM 返回空内容")
 
         # 提取 JSON
         content = content.strip()
@@ -386,6 +314,18 @@ JSON 格式：
                 "optional_terms": plan.get("field_terms", []),
                 "queries": plan["queries"],
             }]
+
+        validation = validate_search_plan(plan)
+        if validation.blocking:
+            plan = await repair_search_plan(conversation_text, plan, validation.issues)
+            validation = validate_search_plan(plan)
+            if validation.blocking:
+                raise Exception(f"搜索方案无法安全执行: {', '.join(validation.issues)}")
+            if validation.warnings:
+                plan.setdefault("warnings", [])
+                for warning in validation.warnings:
+                    if warning not in plan["warnings"]:
+                        plan["warnings"].append(warning)
 
         # 存入 task
         task.search_plan = plan
@@ -465,22 +405,10 @@ async def confirm_task(task_id: str):
     if task.status not in (TaskStatus.PENDING, TaskStatus.PAUSED):
         raise HTTPException(status_code=400, detail=f"Task status is {task.status.value}, cannot start")
 
-    if not task.search_plan:
-        task, _ = await _build_search_plan(task, insert_plan_message=False)
-
-    # 如果有搜索方案，合并 filters/sources，并保留完整研究意图供搜索与评分使用。
-    # 不再用短 query 覆盖 task.query，避免丢失用户原始方向。
-    if task.search_plan:
-        plan = task.search_plan
-        if plan.get("filters"):
-            merged_filters = dict(task.filters)
-            merged_filters.update(plan["filters"])
-            merged_filters["_research_intent"] = plan
-            task.filters = merged_filters
-        else:
-            task.filters = {**dict(task.filters), "_research_intent": plan}
-        if plan.get("sources"):
-            task.sources = [PaperSource(s) for s in plan["sources"]]
+    try:
+        task, _ = await prepare_search_execution(task, plan_builder=_build_search_plan)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"搜索方案无法安全执行: {str(e)}")
 
     task.status = TaskStatus.RUNNING
     task.updated_at = datetime.now()
@@ -603,13 +531,34 @@ async def get_task_detail(task_id: str):
 
     result = task.model_dump()
     # 附加 Agent 状态（根据任务状态推导，刷新页面后恢复）
-    result["agent_statuses"] = _derive_agent_statuses(task.status.value)
+    result["agent_statuses"] = _derive_agent_statuses(task)
     return result
 
 
-def _derive_agent_statuses(task_status: str) -> dict:
+def _derive_agent_statuses(task: Task) -> dict:
     """根据任务状态推导各 Agent 的状态"""
+    task_status = task.status.value
+    found = task.total_papers_found or 0
+    annotated = task.papers_after_filter or 0
+
     if task_status == "running":
+        if found > 0:
+            filter_done = annotated > 0
+            return {
+                "search": {"agent": "search", "status": "done", "message": f"已入库 {found} 篇论文", "progress": 100},
+                "filter": {
+                    "agent": "filter",
+                    "status": "done" if filter_done else "working",
+                    "message": f"语义标注完成 {annotated} 篇" if filter_done else "后台语义标注中，论文已可查看",
+                    "progress": 100 if filter_done else None,
+                },
+                "download": {"agent": "download", "status": "idle", "message": "等待用户筛选"},
+                "chat": {
+                    "agent": "chat",
+                    "status": "working",
+                    "message": "论文已入库，可先筛选；后台处理中" if not filter_done else "等待筛选",
+                },
+            }
         return {
             "search": {"agent": "search", "status": "working", "message": "搜索中..."},
             "filter": {"agent": "filter", "status": "idle", "message": "等待搜索完成"},
@@ -639,10 +588,20 @@ def _derive_agent_statuses(task_status: str) -> dict:
         }
     elif task_status == "reviewing":
         return {
-            "search": {"agent": "search", "status": "done", "message": "搜索完成"},
-            "filter": {"agent": "filter", "status": "idle", "message": "等待用户筛选"},
+            "search": {
+                "agent": "search",
+                "status": "done",
+                "message": f"搜索完成，已入库 {found} 篇" if found else "搜索完成",
+                "progress": 100,
+            },
+            "filter": {
+                "agent": "filter",
+                "status": "done" if annotated else "idle",
+                "message": f"标注完成 {annotated} 篇，等待筛选" if annotated else "等待用户筛选",
+                "progress": 100 if annotated else None,
+            },
             "download": {"agent": "download", "status": "idle", "message": "等待用户确认"},
-            "chat": {"agent": "chat", "status": "working", "message": "待筛选"},
+            "chat": {"agent": "chat", "status": "idle", "message": "待筛选"},
         }
     else:  # pending, paused
         return {
@@ -735,7 +694,7 @@ async def agent_filter(task_id: str):
 
     # LLM 评分
     import json
-    intent = task.filters.get("_research_intent") or task.search_plan or {"query": task.query}
+    intent = task.filters.get("_execution_plan") or task.search_plan or task.filters.get("_research_intent") or {"query": task.query}
     scoring_query = json.dumps(intent, ensure_ascii=False) if isinstance(intent, dict) else task.query
     scores = await llm_score_papers(scoring_query, papers)
     score_map = {s["paper_id"]: s for s in scores}

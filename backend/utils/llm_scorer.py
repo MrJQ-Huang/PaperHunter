@@ -1,10 +1,11 @@
 """LLM 批量语义评分 — 用于 Filter Agent 第二阶段精排"""
 
-import aiohttp
 import asyncio
 import json
-from ..config import settings
+import logging
+import re
 from ..models.paper import Paper
+from .llm_client import call_llm
 
 
 async def llm_score_papers(
@@ -53,12 +54,12 @@ async def llm_score_papers(
     return results
 
 
-def _default_scores(papers: list[Paper], reason: str) -> list[dict]:
+def _default_scores(papers: list[Paper], reason: str, relevance: int = 2) -> list[dict]:
     return [
         {
             "paper_id": p.id,
-            "relevance": 5,
-            "is_relevant": True,
+            "relevance": relevance,
+            "is_relevant": relevance >= 5,
             "reason": reason,
             "paper_type": "unknown",
             "learning_role": "niche_detail",
@@ -86,16 +87,7 @@ async def _score_batch(query: str, papers: list[Paper]) -> list[dict]:
         )
     papers_text = "\n\n".join(paper_lines)
 
-    headers = {
-        "x-api-key": settings.llm_api_key,
-        "anthropic-version": "2023-06-17",
-        "content-type": "application/json",
-    }
-
-    body = {
-        "model": settings.llm_model,
-        "max_tokens": 2048,
-        "system": """你是一个学术论文评审专家。你需要严格评估每篇论文是否与用户的研究主题直接相关。
+    system = """你是一个学术论文评审专家。你需要严格评估每篇论文是否与用户的研究主题直接相关。
 
 评分标准：
 - 9-10: 完全匹配，论文核心内容就是该主题
@@ -120,45 +112,17 @@ async def _score_batch(query: str, papers: list[Paper]) -> list[dict]:
 - method_tags: 1-5 个英文方法/技术标签
 - quality_tags: 0-4 个质量标签，如 highly_cited, top_venue, open_access, benchmark, open_source, recent
 
-只返回 JSON 数组，不要其他内容。""",
-        "messages": [
-            {
-                "role": "user",
-                "content": f"研究主题：{query}\n\n请评估以下论文的相关性：\n\n{papers_text}",
-            }
-        ],
-    }
-
-    url = f"{settings.llm_base_url}/v1/messages"
+只返回 JSON 数组，不要其他内容。"""
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                json=body,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status != 200:
-                    # LLM 调用失败，返回默认中等分数
-                    return _default_scores(papers, "LLM评分失败，默认通过")
-                data = await resp.json()
+        content = await call_llm(
+            [{"role": "user", "content": f"研究主题：{query}\n\n请评估以下论文的相关性：\n\n{papers_text}"}],
+            system=system,
+            max_tokens=2048,
+            timeout=30,
+        )
 
-        content = ""
-        for block in data.get("content", []):
-            if block.get("type") == "text":
-                content += block.get("text", "")
-
-        # 解析 JSON
-        content = content.strip()
-        # 尝试提取 JSON 数组（LLM 可能包裹在 markdown 代码块中）
-        if "```" in content:
-            import re
-            match = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", content, re.DOTALL)
-            if match:
-                content = match.group(1)
-
-        scores = json.loads(content)
+        scores = _parse_score_response(content)
 
         # 构建 ID 到论文的映射
         id_map = {p.id: p for p in papers}
@@ -202,7 +166,8 @@ async def _score_batch(query: str, papers: list[Paper]) -> list[dict]:
 
         return result
 
-    except Exception:
+    except Exception as e:
+        logging.warning("LLM score parse failed: %s", e)
         # 解析失败，返回默认分数
         return _default_scores(papers, "评分解析失败")
 
@@ -213,3 +178,74 @@ def _as_str_list(value) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _parse_score_response(content: str) -> list[dict]:
+    """Parse score JSON from models that may wrap strict JSON in prose/code fences."""
+    text = (content or "").strip()
+    if not text:
+        raise ValueError("empty score response")
+
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+    if fence:
+        text = fence.group(1).strip()
+
+    candidates = [text]
+    array_text = _extract_balanced(text, "[", "]")
+    if array_text and array_text not in candidates:
+        candidates.append(array_text)
+    object_text = _extract_balanced(text, "{", "}")
+    if object_text and object_text not in candidates:
+        candidates.append(object_text)
+
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            parsed = json.loads(_strip_json_comments(candidate))
+            if isinstance(parsed, list):
+                return [item for item in parsed if isinstance(item, dict)]
+            if isinstance(parsed, dict):
+                for key in ("scores", "results", "papers", "items", "data"):
+                    value = parsed.get(key)
+                    if isinstance(value, list):
+                        return [item for item in value if isinstance(item, dict)]
+        except Exception as e:
+            last_error = e
+
+    raise ValueError(f"unable to parse score JSON: {last_error}; preview={text[:200]}")
+
+
+def _extract_balanced(text: str, open_char: str, close_char: str) -> str | None:
+    start = text.find(open_char)
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(text)):
+        char = text[idx]
+        if escape:
+            escape = False
+            continue
+        if char == "\\":
+            escape = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth -= 1
+            if depth == 0:
+                return text[start:idx + 1]
+    return None
+
+
+def _strip_json_comments(text: str) -> str:
+    # Conservative cleanup for common LLM artifacts.
+    text = text.strip()
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    return text

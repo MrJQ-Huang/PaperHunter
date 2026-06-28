@@ -177,7 +177,10 @@ function TaskItem({ task, isActive, onSelect, onContextMenu, dimmed, isRenaming,
   isRenaming?: boolean; editingName?: string; onEditingNameChange?: (v: string) => void
   onCommitRename?: () => void; onStartRename?: () => void
 }) {
-  const info = statusInfo[task.status] || statusInfo.pending
+  const hasIndexedPapers = task.status === 'running' && (task.total_papers_found || 0) > 0
+  const info = hasIndexedPapers
+    ? { icon: Loader2, color: 'text-sky-500', label: '标注中' }
+    : statusInfo[task.status] || statusInfo.pending
   const Icon = info.icon
   const isRunning = task.status === 'running'
   const inputRef = useRef<HTMLInputElement>(null)

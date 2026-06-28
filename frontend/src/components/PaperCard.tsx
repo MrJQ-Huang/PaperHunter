@@ -1,5 +1,5 @@
 import { Paper } from '../stores/paperStore'
-import { ExternalLink, Download, FileText, Copy, CheckCircle2, Pencil, Trash2 } from 'lucide-react'
+import { ExternalLink, Download, FileText, Copy, CheckCircle2, Pencil, Trash2, Sparkles } from 'lucide-react'
 import { useState } from 'react'
 
 interface Props {
@@ -9,6 +9,8 @@ interface Props {
   onDelete?: (id: string) => void
   selected?: boolean
   onToggleSelect?: (id: string) => void
+  featured?: boolean
+  compact?: boolean
 }
 
 const sourceColors: Record<string, string> = {
@@ -46,7 +48,7 @@ const asStringList = (value: unknown): string[] => {
   return []
 }
 
-export default function PaperCard({ paper, onDownload, onEdit, onDelete, selected, onToggleSelect }: Props) {
+export default function PaperCard({ paper, onDownload, onEdit, onDelete, selected, onToggleSelect, featured, compact }: Props) {
   const [copied, setCopied] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
@@ -69,7 +71,19 @@ export default function PaperCard({ paper, onDownload, onEdit, onDelete, selecte
   }
 
   return (
-    <div className={`bg-white rounded-xl border p-4 hover:shadow-md transition-shadow group ${selected ? 'border-violet-300 ring-1 ring-violet-200' : 'border-gray-200'}`}>
+    <div className={`relative bg-white rounded-xl border p-4 transition-shadow group ${
+      featured
+        ? 'border-amber-200 ring-1 ring-amber-100 shadow-sm shadow-amber-100/70'
+        : selected
+          ? 'border-violet-300 ring-1 ring-violet-200'
+          : 'border-gray-200 hover:shadow-md'
+    }`}>
+      {featured && (
+        <div className="absolute -top-2 right-3 flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 shadow-sm">
+          <Sparkles size={10} />
+          核心必看
+        </div>
+      )}
       {/* 标题 + 管理按钮 */}
       <div className="flex items-start justify-between gap-2 mb-2">
         {onToggleSelect && (
@@ -159,7 +173,7 @@ export default function PaperCard({ paper, onDownload, onEdit, onDelete, selecte
       )}
 
       {/* 摘要 */}
-      <p className="text-xs text-gray-600 line-clamp-3 mb-3">{paper.abstract}</p>
+      <p className={`text-xs text-gray-600 mb-3 ${compact ? 'line-clamp-2' : 'line-clamp-3'}`}>{paper.abstract}</p>
 
       {paper.annotation_reason && (
         <p className="text-[11px] text-gray-500 bg-gray-50 rounded-lg px-2 py-1.5 mb-3 line-clamp-2">

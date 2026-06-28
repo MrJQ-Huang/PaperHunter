@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from .database import init_db
-from .api import tasks, papers, websocket, chat
+from .api import tasks, papers, websocket, chat, settings as settings_api
 
 
 @asynccontextmanager
@@ -31,6 +31,7 @@ app.add_middleware(
 app.include_router(tasks.router, prefix="/api", tags=["tasks"])
 app.include_router(papers.router, prefix="/api", tags=["papers"])
 app.include_router(chat.router, prefix="/api", tags=["chat"])
+app.include_router(settings_api.router, prefix="/api", tags=["settings"])
 app.include_router(websocket.router, tags=["websocket"])
 
 
@@ -49,7 +50,9 @@ async def stats():
 async def config():
     from .config import settings
     return {
+        "llm_api_type": settings.llm_api_type,
         "llm_model": settings.llm_model,
         "llm_base_url": settings.llm_base_url,
+        "has_llm_api_key": bool(settings.llm_api_key and settings.llm_api_key != "tp-placeholder"),
         "download_dir": settings.download_dir,
     }

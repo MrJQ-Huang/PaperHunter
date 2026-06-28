@@ -1,10 +1,11 @@
 from crewai import Agent, LLM
 from ..config import settings
+from ..utils.llm_client import llm_model_for_crewai
 
 
 def get_filter_llm() -> LLM:
     return LLM(
-        model=f"anthropic/{settings.llm_model}",
+        model=llm_model_for_crewai(),
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
     )

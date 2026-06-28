@@ -75,11 +75,8 @@ export default function Dashboard() {
             .then((d) => {
               if (d) {
                 setCurrentTask(d)
-                if (d.agent_statuses) {
-                  for (const [k, v] of Object.entries(d.agent_statuses) as [string, any][]) {
-                    useAgentStore.getState().updateAgent({ agent: k, status: v.status, message: v.message, progress: v.progress })
-                  }
-                }
+                applyAgentStatuses(d)
+                if (shouldPollTask(d)) startPolling(d.id)
               }
             })
             .catch(() => {})
@@ -99,6 +96,25 @@ export default function Dashboard() {
     }
   }
 
+  const shouldPollTask = (task: Task) =>
+    task.status === 'running' || (task.status === 'reviewing' && (task.papers_after_filter || 0) === 0)
+
+  const shouldStopPolling = (task: Task) =>
+    ['completed', 'failed', 'cancelled'].includes(task.status) ||
+    (task.status === 'reviewing' && (task.papers_after_filter || 0) > 0)
+
+  const getStatusBadge = (task: Task) => {
+    if (task.status === 'running' && (task.total_papers_found || 0) > 0) {
+      return { label: '标注中', className: 'bg-sky-50 text-sky-500' }
+    }
+    if (task.status === 'pending') return { label: '待确认', className: 'bg-amber-50 text-amber-500' }
+    if (task.status === 'running') return { label: '执行中', className: 'bg-blue-50 text-blue-500' }
+    if (task.status === 'reviewing') return { label: '待筛选', className: 'bg-violet-50 text-violet-500' }
+    if (task.status === 'completed') return { label: '已完成', className: 'bg-emerald-50 text-emerald-500' }
+    if (task.status === 'failed') return { label: '失败', className: 'bg-red-50 text-red-400' }
+    return { label: task.status, className: 'bg-gray-100 text-gray-400' }
+  }
+
   const startPolling = (taskId: string) => {
     if (pollingTasks.current.has(taskId)) return
     pollingTasks.current.add(taskId)
@@ -113,7 +129,7 @@ export default function Dashboard() {
             applyAgentStatuses(d)
             fetchPapers(taskId)
           }
-          if (['completed', 'failed', 'cancelled'].includes(d.status)) { clearInterval(iv); pollingTasks.current.delete(taskId) }
+          if (shouldStopPolling(d)) { clearInterval(iv); pollingTasks.current.delete(taskId) }
         }
       } catch { clearInterval(iv); pollingTasks.current.delete(taskId) }
     }, 3000)
@@ -129,7 +145,7 @@ export default function Dashboard() {
         const d = await resp.json()
         setCurrentTask(d)
         applyAgentStatuses(d)
-        if (d.status === 'running') startPolling(task.id)
+        if (shouldPollTask(d)) startPolling(task.id)
       }
     } catch {}
   }
@@ -184,7 +200,7 @@ export default function Dashboard() {
     const hasTask = latestTasks.some((t) => t.id === task.id)
     setTasks(hasTask ? latestTasks.map((t) => t.id === task.id ? task : t) : [task, ...latestTasks])
     fetchPapers(task.id)
-    if (task.status === 'running') startPolling(task.id)
+    if (shouldPollTask(task)) startPolling(task.id)
   }
 
   const handleSelectTopic = (topic: string) => {
@@ -226,15 +242,8 @@ export default function Dashboard() {
               {currentTask ? (
                 <>
                   <h1 className="text-sm font-bold text-gray-800 truncate">{currentTask.query}</h1>
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
-                    currentTask.status === 'running' ? 'bg-blue-50 text-blue-500' :
-                    currentTask.status === 'pending' ? 'bg-amber-50 text-amber-500' :
-                    currentTask.status === 'reviewing' ? 'bg-violet-50 text-violet-500' :
-                    currentTask.status === 'completed' ? 'bg-emerald-50 text-emerald-500' :
-                    currentTask.status === 'failed' ? 'bg-red-50 text-red-400' :
-                    'bg-gray-100 text-gray-400'
-                  }`}>
-                    {currentTask.status === 'pending' ? '待确认' : currentTask.status === 'running' ? '执行中' : currentTask.status === 'reviewing' ? '待筛选' : currentTask.status === 'completed' ? '已完成' : currentTask.status === 'failed' ? '失败' : currentTask.status}
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${getStatusBadge(currentTask).className}`}>
+                    {getStatusBadge(currentTask).label}
                   </span>
                 </>
               ) : (

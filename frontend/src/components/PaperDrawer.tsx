@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Paper } from '../stores/paperStore'
 import PaperCard from './PaperCard'
-import { ChevronLeft, ChevronRight, Search, Download, AlertCircle, FileText, ArrowDownWideNarrow, ArrowUpNarrowWide, Star } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Search, Download, AlertCircle, FileText, ArrowDownWideNarrow, ArrowUpNarrowWide, Star, Sparkles } from 'lucide-react'
 
 interface Props {
   papers: Paper[]
@@ -16,6 +16,12 @@ const sortConfig: Record<SortMode, { icon: typeof Star; label: string; next: Sor
   relevance: { icon: Star, label: '相关度', next: 'date_desc' },
   date_desc: { icon: ArrowDownWideNarrow, label: '时间↓', next: 'date_asc' },
   date_asc: { icon: ArrowUpNarrowWide, label: '时间↑', next: 'relevance' },
+}
+
+const pickCorePapers = (papers: Paper[]) => {
+  const ranked = [...papers].sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0))
+  const strong = ranked.filter((p) => (p.relevance_score || 0) >= 6.5)
+  return (strong.length > 0 ? strong : ranked.slice(0, 3)).slice(0, 6)
 }
 
 export default function PaperDrawer({ papers, total, downloaded, failed }: Props) {
@@ -36,6 +42,9 @@ export default function PaperDrawer({ papers, total, downloaded, failed }: Props
     if (sortMode === 'date_asc') return (a.published_date || '').localeCompare(b.published_date || '')
     return (b.relevance_score || 0) - (a.relevance_score || 0)
   })
+  const corePapers = pickCorePapers(filtered)
+  const coreIds = new Set(corePapers.map((p) => p.id))
+  const regularPapers = sorted.filter((p) => !coreIds.has(p.id))
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -119,8 +128,24 @@ export default function PaperDrawer({ papers, total, downloaded, failed }: Props
 
       {/* 论文列表 */}
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
-        {sorted.length > 0 ? sorted.map((p) => <PaperCard key={p.id} paper={p} />) : (
+        {corePapers.length > 0 && (
+          <div className="rounded-2xl border border-amber-100 bg-amber-50/60 p-3">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <div className="flex items-center gap-1.5">
+                <Sparkles size={13} className="text-amber-500" />
+                <span className="text-xs font-bold text-amber-800">核心论文池</span>
+              </div>
+              <span className="text-[10px] text-amber-600">{corePapers.length} 篇优先看</span>
+            </div>
+            <div className="space-y-2">
+              {corePapers.map((p) => <PaperCard key={p.id} paper={p} featured compact />)}
+            </div>
+          </div>
+        )}
+        {regularPapers.length > 0 ? regularPapers.map((p) => <PaperCard key={p.id} paper={p} />) : sorted.length === 0 ? (
           <div className="text-center text-gray-300 text-xs py-10">{searchQuery ? '没有找到~' : '暂无论文'}</div>
+        ) : (
+          <div className="text-center text-gray-300 text-xs py-6">其余论文暂无</div>
         )}
       </div>
     </div>

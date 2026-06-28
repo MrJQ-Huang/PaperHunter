@@ -1,41 +1,16 @@
-import aiohttp
 import json
-from ..config import settings
+from .llm_client import call_llm
 
 
 async def translate_query(chinese_query: str) -> str:
     """将中文研究需求翻译为英文检索词"""
-    headers = {
-        "x-api-key": settings.llm_api_key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-
-    body = {
-        "model": settings.llm_model,
-        "max_tokens": 256,
-        "system": "你是学术搜索助手。将用户的中文研究需求翻译为适合学术数据库检索的英文关键词。只输出英文检索词，不要解释。用 AND/OR 组合多个关键词，保持简洁精准。",
-        "messages": [
-            {"role": "user", "content": f"翻译为英文检索词：{chinese_query}"}
-        ],
-    }
-
-    url = f"{settings.llm_base_url}/v1/messages"
-
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=body, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status != 200:
-                    return chinese_query
-                data = await resp.json()
-
-        content = ""
-        for block in data.get("content", []):
-            if block.get("type") == "text":
-                content += block.get("text", "")
+        content = await call_llm(
+            [{"role": "user", "content": f"翻译为英文检索词：{chinese_query}"}],
+            system="你是学术搜索助手。将用户的中文研究需求翻译为适合学术数据库检索的英文关键词。只输出英文检索词，不要解释。用 AND/OR 组合多个关键词，保持简洁精准。",
+            max_tokens=256,
+            timeout=15,
+        )
 
         translated = content.strip().strip('"').strip("'")
         return translated if translated else chinese_query
@@ -59,16 +34,7 @@ async def generate_search_plan(query: str) -> dict:
         }
     }
     """
-    headers = {
-        "x-api-key": settings.llm_api_key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-
-    body = {
-        "model": settings.llm_model,
-        "max_tokens": 2048,
-        "system": """你是一个学术搜索策略专家。根据用户的研究主题，生成精准的搜索方案。
+    system = """你是一个学术搜索策略专家。根据用户的研究主题，生成精准的搜索方案。
 
 你必须返回纯 JSON，格式如下：
 {
@@ -117,28 +83,15 @@ async def generate_search_plan(query: str) -> dict:
 3. 对有歧义的缩写必须给 exclude_terms，例如 VLA 要排除 radio astronomy / Very Large Array / telescope。
 4. subtopics 生成 4-7 个，每个子方向 query 要不同，避免重复搜索同一批标题。
 5. arXiv 支持 AND/OR 布尔语法，其他源用简洁自然语言关键词。
-6. 只返回 JSON，不要其他内容""",
-        "messages": [
-            {"role": "user", "content": f"研究主题：{query}"}
-        ],
-    }
-
-    url = f"{settings.llm_base_url}/v1/messages"
+6. 只返回 JSON，不要其他内容"""
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, json=body, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=25),
-            ) as resp:
-                if resp.status != 200:
-                    return _fallback_plan(query)
-                data = await resp.json()
-
-        content = ""
-        for block in data.get("content", []):
-            if block.get("type") == "text":
-                content += block.get("text", "")
+        content = await call_llm(
+            [{"role": "user", "content": f"研究主题：{query}"}],
+            system=system,
+            max_tokens=2048,
+            timeout=25,
+        )
 
         # 解析 JSON
         content = content.strip()
