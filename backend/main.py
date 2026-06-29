@@ -43,6 +43,8 @@ async def health():
 @app.get("/api/stats")
 async def stats():
     from .database import get_stats
+    from .utils.download_state import sync_download_file_state_for_scope
+    await sync_download_file_state_for_scope()
     return await get_stats()
 
 

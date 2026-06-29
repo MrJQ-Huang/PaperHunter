@@ -523,6 +523,8 @@ async def get_task_detail(task_id: str):
 
     # 从 papers 表实时统计，和 Settings 页面用同一个数据源
     from ..database import get_paper_stats_for_task
+    from ..utils.download_state import sync_download_file_state_for_scope
+    await sync_download_file_state_for_scope(task_id)
     stats = await get_paper_stats_for_task(task_id)
     if stats["total"] > 0:
         task.total_papers_found = stats["total"]
@@ -644,18 +646,20 @@ async def download_task_papers(task_id: str, body: DownloadRequest | None = None
         raise HTTPException(status_code=404, detail="Task not found")
 
     from ..database import get_papers, get_paper
-    from ..models.paper import Paper
+    from ..utils.download_state import sync_download_file_state, sync_download_file_states
 
     if body and body.paper_ids:
         # 下载指定论文
         papers = []
         for pid in body.paper_ids:
             p = await get_paper(pid)
+            p = await sync_download_file_state(p)
             if p and p.download_status in ("pending", "failed"):
                 papers.append(p)
     else:
         # 下载该任务所有待下载的论文
         all_papers, _ = await get_papers(task_id=task_id, per_page=10000)
+        all_papers = await sync_download_file_states(all_papers)
         papers = [p for p in all_papers if p.download_status in ("pending", "failed")]
 
     if not papers:

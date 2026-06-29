@@ -5,9 +5,13 @@ from pydantic import BaseModel
 
 from ..database import (
     get_paper, get_papers, update_paper_download, update_paper,
-    delete_paper, delete_all_papers, count_papers, get_task,
+    delete_paper, delete_all_papers, get_task,
 )
-from ..config import settings
+from ..utils.download_state import (
+    sync_download_file_state,
+    sync_download_file_state_for_scope,
+    sync_download_file_states,
+)
 
 router = APIRouter()
 
@@ -38,10 +42,17 @@ async def list_papers(
     learning_role: str | None = None,
     subtopic: str | None = None,
 ):
+    await sync_download_file_state_for_scope(task_id)
     papers, total = await get_papers(
         task_id, page, per_page, sort, search, download_status, source,
         paper_type, learning_role, subtopic,
     )
+    papers = await sync_download_file_states(papers)
+    if download_status == "downloaded":
+        papers, total = await get_papers(
+            task_id, page, per_page, sort, search, download_status, source,
+            paper_type, learning_role, subtopic,
+        )
     return {
         "papers": [p.model_dump() for p in papers],
         "total": total,
@@ -65,8 +76,10 @@ async def clear_papers(task_id: str | None = None):
 
 @router.get("/papers/stats/overview")
 async def papers_stats():
-    total = await count_papers()
-    return {"total": total}
+    papers, total = await get_papers(page=1, per_page=10000)
+    papers = await sync_download_file_states(papers)
+    downloaded = sum(1 for p in papers if p.download_status == "done")
+    return {"total": total, "downloaded": downloaded}
 
 
 @router.get("/papers/{paper_id}")
@@ -74,6 +87,7 @@ async def get_paper_detail(paper_id: str):
     paper = await get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
+    paper = await sync_download_file_state(paper)
     return paper.model_dump()
 
 
@@ -118,6 +132,7 @@ async def trigger_download(paper_id: str):
     paper = await get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
+    paper = await sync_download_file_state(paper)
     if paper.download_status == "done":
         return {"message": "Already downloaded", "paper_id": paper_id}
 
@@ -135,6 +150,7 @@ async def trigger_download(paper_id: str):
 @router.get("/papers/{paper_id}/pdf")
 async def get_pdf(paper_id: str):
     paper = await get_paper(paper_id)
+    paper = await sync_download_file_state(paper)
     if not paper or not paper.local_pdf_path:
         raise HTTPException(status_code=404, detail="PDF not found")
     path = Path(paper.local_pdf_path)
