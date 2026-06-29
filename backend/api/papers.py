@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from ..database import (
     get_paper, get_papers, update_paper_download, update_paper,
-    delete_paper, delete_all_papers, count_papers,
+    delete_paper, delete_all_papers, count_papers, get_task,
 )
 from ..config import settings
 
@@ -122,7 +122,8 @@ async def trigger_download(paper_id: str):
         return {"message": "Already downloaded", "paper_id": paper_id}
 
     from ..tools.pdf_download_tool import download_pdf
-    local_path, error = await download_pdf(paper)
+    task = await get_task(paper.task_id) if paper.task_id else None
+    local_path, error = await download_pdf(paper, task.query if task else None)
     if local_path:
         await update_paper_download(paper_id, local_path, "done")
         return {"message": "Downloaded", "paper_id": paper_id, "path": local_path}

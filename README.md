@@ -179,7 +179,7 @@ npm run dev
           ▼
 ┌───────────────────────────────────────────────────────────────┐
 │                      本地存储                                   │
-│  SQLite (论文元数据)  +  ./papers/ (PDF 文件按主题分类)          │
+│  SQLite (论文元数据)  +  ./papers/ (PDF 文件按任务分类)          │
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -253,7 +253,7 @@ npm run dev
   2. 通过 Unpaywall API 查找合法 OA 版本
   3. 通过出版商 API（Springer/Elsevier）下载（需 API key）
   4. 从 arXiv/PubMed Central 等开放仓库下载
-- **文件命名**: `{主题}/{作者}_{年份}_{标题前30字}.pdf`
+- **文件命名**: `{任务名称}/{作者}_{年份}_{标题}_{论文ID前8位}.pdf`
 - **Backstory**:
   > 你是一位论文下载专家，熟悉各种学术论文的获取渠道。你会优先使用合法的开放获取途径，确保下载的 PDF 文件完整可用。你会按规则对文件进行分类存储，并记录下载失败的原因。
   >
@@ -506,7 +506,7 @@ paperhunter/
 │   └── tailwind.config.js
 │
 ├── papers/                         # 下载的论文（不入 Git）
-│   └── {topic}/                    # 按主题分类
+│   └── {task_name}/                # 按前端任务分类
 │       └── {author}_{year}_{title}.pdf
 │
 └── data/                           # 数据库文件
@@ -869,7 +869,7 @@ PROXY_POOL = [
 | UI 组件    | Shadcn UI + Tailwind CSS                 |
 | 状态管理   | Zustand                                  |
 | 数据库     | SQLite (论文元数据)                      |
-| PDF 存储   | 本地文件系统（按主题分类）               |
+| PDF 存储   | 本地文件系统（按前端任务分类）           |
 | 学术 API   | arxiv, semanticscholar, pyalex, habanero |
 
 ---

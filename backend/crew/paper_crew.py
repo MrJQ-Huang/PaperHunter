@@ -679,7 +679,7 @@ class PaperCrew:
         async def _download_one(paper: Paper):
             nonlocal success, failed
             async with semaphore:
-                local_path, error = await download_pdf(paper)
+                local_path, error = await download_pdf(paper, self.task.query)
                 if local_path:
                     paper.local_pdf_path = local_path
                     paper.download_status = "done"

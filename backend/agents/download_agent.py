@@ -25,7 +25,7 @@ def create_download_agent() -> Agent:
 3. 通过出版商 API 下载（需 API key）
 4. 从 arXiv/PubMed Central 等开放仓库下载
 
-文件命名规则: {主题}/{作者}_{年份}_{标题前30字}.pdf""",
+文件命名规则: {任务名称}/{作者}_{年份}_{标题}_{论文ID前8位}.pdf""",
         llm=get_download_llm(),
         verbose=True,
         allow_delegation=False,
