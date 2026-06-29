@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { usePaperStore, Paper, Task } from '../stores/paperStore'
 import PaperCard from '../components/PaperCard'
-import { BookOpen, RefreshCw, ChevronDown, ChevronLeft, ChevronRight, Search, Trash2, X, Download, AlertCircle, Clock, ArrowDownWideNarrow, ArrowUpNarrowWide, Star, GitBranch, Network, CalendarDays, Layers3, Sparkles, SlidersHorizontal, Eye } from 'lucide-react'
+import { BookOpen, RefreshCw, ChevronDown, ChevronLeft, ChevronRight, Search, Trash2, X, Download, AlertCircle, Clock, ArrowDownWideNarrow, ArrowUpNarrowWide, Star, GitBranch, Network, CalendarDays, Layers3, Sparkles, SlidersHorizontal, Eye, Loader2 } from 'lucide-react'
 
 const SOURCE_OPTIONS = [
   { value: '', label: '全部来源' },
@@ -117,6 +117,7 @@ export default function PaperList() {
   const [confirmClear, setConfirmClear] = useState(false)
   const [selectedPapers, setSelectedPapers] = useState<Set<string>>(new Set())
   const [downloading, setDownloading] = useState(false)
+  const [downloadingPaperIds, setDownloadingPaperIds] = useState<Set<string>>(new Set())
   const [graphPapers, setGraphPapers] = useState<Paper[]>([])
   const [graphLoading, setGraphLoading] = useState(false)
   const [coreCollapsed, setCoreCollapsed] = useState(false)
@@ -199,23 +200,96 @@ export default function PaperList() {
       .finally(() => setGraphLoading(false))
   }, [activeTaskId])
 
+  const markDownloading = (ids: string[], active: boolean) => {
+    setDownloadingPaperIds((prev) => {
+      const next = new Set(prev)
+      ids.forEach((id) => {
+        if (active) next.add(id)
+        else next.delete(id)
+      })
+      return next
+    })
+  }
+
+  const refreshPaper = async (paperId: string) => {
+    const resp = await fetch(`/api/papers/${paperId}`)
+    if (!resp.ok) return null
+    const paper = await resp.json() as Paper
+    updatePaper(paper)
+    setGraphPapers((prev) => prev.map((p) => (p.id === paper.id ? paper : p)))
+    return paper
+  }
+
+  const pollDownloadProgress = async (taskId: string, paperIds: string[]) => {
+    let remaining = new Set(paperIds)
+    for (let i = 0; i < 80 && remaining.size > 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      const params = new URLSearchParams({
+        task_id: taskId,
+        page: '1',
+        per_page: '10000',
+        sort: 'date',
+      })
+      const resp = await fetch(`/api/papers?${params}`)
+      if (!resp.ok) continue
+      const data = await resp.json()
+      const latest = (data?.papers || []) as Paper[]
+      const byId = new Map(latest.map((paper) => [paper.id, paper]))
+      setGraphPapers(latest)
+      setDownloadingPaperIds((prev) => {
+        const next = new Set(prev)
+        paperIds.forEach((id) => {
+          const paper = byId.get(id)
+          if (paper && paper.download_status !== 'pending') next.delete(id)
+        })
+        return next
+      })
+      remaining = new Set(paperIds.filter((id) => {
+        const paper = byId.get(id)
+        return !paper || paper.download_status === 'pending'
+      }))
+      await fetchPapers()
+    }
+    markDownloading(Array.from(remaining), false)
+  }
+
   const handleDownload = async (paperId: string) => {
+    markDownloading([paperId], true)
     try {
-      await fetch(`/api/papers/${paperId}/download`, { method: 'POST' })
-    } catch {}
+      const resp = await fetch(`/api/papers/${paperId}/download`, { method: 'POST' })
+      if (resp.ok) {
+        await refreshPaper(paperId)
+        await fetchPapers()
+      }
+    } catch {
+    } finally {
+      markDownloading([paperId], false)
+    }
   }
 
   const handleDownloadAll = async () => {
     setDownloading(true)
+    const downloadPool = graphPapers.length > 0 ? graphPapers : visiblePapers
+    const ids = downloadPool
+      .filter((paper) => paper.download_status === 'pending' || paper.download_status === 'failed')
+      .map((paper) => paper.id)
+    markDownloading(ids, true)
     try {
       // 找到当前任务的 task_id
       const taskId = selectedTaskId || (tasks.length > 0 ? tasks[0].id : '')
-      if (!taskId) return
+      if (!taskId) {
+        markDownloading(ids, false)
+        return
+      }
       const resp = await fetch(`/api/tasks/${taskId}/download`, { method: 'POST' })
       if (resp.ok) {
-        setTimeout(() => fetchPapers(), 2000)
+        await pollDownloadProgress(taskId, ids)
+      } else {
+        markDownloading(ids, false)
       }
-    } catch {} finally {
+    } catch {
+      markDownloading(ids, false)
+    } finally {
       setDownloading(false)
     }
   }
@@ -223,19 +297,28 @@ export default function PaperList() {
   const handleDownloadSelected = async () => {
     if (selectedPapers.size === 0) return
     setDownloading(true)
+    const ids = Array.from(selectedPapers)
+    markDownloading(ids, true)
     try {
       const taskId = selectedTaskId || (tasks.length > 0 ? tasks[0].id : '')
-      if (!taskId) return
+      if (!taskId) {
+        markDownloading(ids, false)
+        return
+      }
       const resp = await fetch(`/api/tasks/${taskId}/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paper_ids: Array.from(selectedPapers) }),
+        body: JSON.stringify({ paper_ids: ids }),
       })
       if (resp.ok) {
         setSelectedPapers(new Set())
-        setTimeout(() => fetchPapers(), 2000)
+        await pollDownloadProgress(taskId, ids)
+      } else {
+        markDownloading(ids, false)
       }
-    } catch {} finally {
+    } catch {
+      markDownloading(ids, false)
+    } finally {
       setDownloading(false)
     }
   }
@@ -611,7 +694,7 @@ export default function PaperList() {
                     disabled={downloading}
                     className="flex items-center gap-1 px-3 py-1.5 text-sm bg-emerald-50 text-emerald-600 rounded-lg hover:bg-emerald-100 disabled:opacity-50"
                   >
-                    <Download size={14} />
+                    {downloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
                     下载选中 ({selectedPapers.size})
                   </button>
                 )}
@@ -623,7 +706,7 @@ export default function PaperList() {
               disabled={downloading}
               className="flex items-center gap-1 px-3 py-1.5 text-sm text-emerald-600 hover:text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-50 disabled:opacity-50"
             >
-              <Download size={14} />
+              {downloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
               {downloading ? '下载中...' : '下载全部'}
             </button>
             {/* 清空按钮 */}
@@ -850,6 +933,7 @@ export default function PaperList() {
                     onDelete={handleDelete}
                     selected={selectedPapers.has(paper.id)}
                     onToggleSelect={toggleSelect}
+                    downloading={downloadingPaperIds.has(paper.id)}
                   />
                 ))}
               </div>
@@ -904,6 +988,7 @@ export default function PaperList() {
                       onDelete={handleDelete}
                       selected={selectedPapers.has(paper.id)}
                       onToggleSelect={toggleSelect}
+                      downloading={downloadingPaperIds.has(paper.id)}
                     />
                   ))}
               </div>
@@ -934,6 +1019,7 @@ export default function PaperList() {
                   onDelete={handleDelete}
                   selected={selectedPapers.has(paper.id)}
                   onToggleSelect={toggleSelect}
+                  downloading={downloadingPaperIds.has(paper.id)}
                 />
               ))}
             </div>

@@ -1,5 +1,5 @@
 import { Paper } from '../stores/paperStore'
-import { ExternalLink, Download, FileText, Copy, CheckCircle2, Pencil, Trash2, Sparkles } from 'lucide-react'
+import { ExternalLink, Download, FileText, Copy, CheckCircle2, Pencil, Trash2, Sparkles, Loader2 } from 'lucide-react'
 import { useState } from 'react'
 
 interface Props {
@@ -11,6 +11,7 @@ interface Props {
   onToggleSelect?: (id: string) => void
   featured?: boolean
   compact?: boolean
+  downloading?: boolean
 }
 
 const sourceColors: Record<string, string> = {
@@ -48,7 +49,7 @@ const asStringList = (value: unknown): string[] => {
   return []
 }
 
-export default function PaperCard({ paper, onDownload, onEdit, onDelete, selected, onToggleSelect, featured, compact }: Props) {
+export default function PaperCard({ paper, onDownload, onEdit, onDelete, selected, onToggleSelect, featured, compact, downloading }: Props) {
   const [copied, setCopied] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
@@ -183,7 +184,12 @@ export default function PaperCard({ paper, onDownload, onEdit, onDelete, selecte
 
       {/* 操作按钮 */}
       <div className="flex items-center gap-2">
-        {paper.download_status === 'done' ? (
+        {downloading ? (
+          <span className="flex items-center gap-1.5 px-2 py-1 text-xs text-emerald-600 bg-emerald-50 rounded">
+            <Loader2 size={14} className="animate-spin" />
+            下载中
+          </span>
+        ) : paper.download_status === 'done' ? (
           <span className="flex items-center gap-1 text-xs text-green-600">
             <CheckCircle2 size={14} />
             已下载
