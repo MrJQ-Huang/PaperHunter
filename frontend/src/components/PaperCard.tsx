@@ -5,6 +5,7 @@ import { useState } from 'react'
 interface Props {
   paper: Paper
   onDownload?: (id: string) => void
+  onDeletePdf?: (id: string) => void
   onEdit?: (paper: Paper) => void
   onDelete?: (id: string) => void
   selected?: boolean
@@ -49,9 +50,10 @@ const asStringList = (value: unknown): string[] => {
   return []
 }
 
-export default function PaperCard({ paper, onDownload, onEdit, onDelete, selected, onToggleSelect, featured, compact, downloading }: Props) {
+export default function PaperCard({ paper, onDownload, onDeletePdf, onEdit, onDelete, selected, onToggleSelect, featured, compact, downloading }: Props) {
   const [copied, setCopied] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [confirmPdfDelete, setConfirmPdfDelete] = useState(false)
 
   const copyDoi = () => {
     if (paper.doi) {
@@ -69,6 +71,16 @@ export default function PaperCard({ paper, onDownload, onEdit, onDelete, selecte
     }
     onDelete?.(paper.id)
     setConfirmDelete(false)
+  }
+
+  const handleDeletePdf = () => {
+    if (!confirmPdfDelete) {
+      setConfirmPdfDelete(true)
+      setTimeout(() => setConfirmPdfDelete(false), 3000)
+      return
+    }
+    onDeletePdf?.(paper.id)
+    setConfirmPdfDelete(false)
   }
 
   return (
@@ -182,7 +194,6 @@ export default function PaperCard({ paper, onDownload, onEdit, onDelete, selecte
         </p>
       )}
 
-      {/* 操作按钮 */}
       <div className="flex items-center gap-2">
         {downloading ? (
           <span className="flex items-center gap-1.5 px-2 py-1 text-xs text-emerald-600 bg-emerald-50 rounded">
@@ -190,10 +201,18 @@ export default function PaperCard({ paper, onDownload, onEdit, onDelete, selecte
             下载中
           </span>
         ) : paper.download_status === 'done' ? (
-          <span className="flex items-center gap-1 text-xs text-green-600">
-            <CheckCircle2 size={14} />
-            已下载
-          </span>
+          <button
+            onClick={handleDeletePdf}
+            className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
+              confirmPdfDelete
+                ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                : 'bg-green-50 text-green-600 hover:bg-green-100'
+            }`}
+            title={confirmPdfDelete ? '再次点击删除本地 PDF' : '点击后可删除本地 PDF'}
+          >
+            {confirmPdfDelete ? <Trash2 size={14} /> : <CheckCircle2 size={14} />}
+            {confirmPdfDelete ? '删除PDF' : '已下载'}
+          </button>
         ) : (
           <button
             onClick={() => onDownload?.(paper.id)}

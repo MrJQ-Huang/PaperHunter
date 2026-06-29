@@ -159,6 +159,25 @@ async def get_pdf(paper_id: str):
     return FileResponse(path, media_type="application/pdf", filename=path.name)
 
 
+@router.delete("/papers/{paper_id}/pdf")
+async def remove_paper_pdf(paper_id: str):
+    paper = await get_paper(paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    if paper.local_pdf_path:
+        path = Path(paper.local_pdf_path)
+        if path.exists():
+            path.unlink()
+
+    await update_paper_download(paper_id, None, "pending")
+    updated = await get_paper(paper_id)
+    return {
+        "message": "PDF deleted",
+        "paper": updated.model_dump() if updated else None,
+    }
+
+
 @router.delete("/papers/{paper_id}")
 async def remove_paper(paper_id: str):
     paper = await get_paper(paper_id)

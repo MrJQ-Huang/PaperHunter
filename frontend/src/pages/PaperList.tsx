@@ -267,6 +267,20 @@ export default function PaperList() {
     }
   }
 
+  const handleDeletePdf = async (paperId: string) => {
+    try {
+      const resp = await fetch(`/api/papers/${paperId}/pdf`, { method: 'DELETE' })
+      if (resp.ok) {
+        const data = await resp.json()
+        if (data?.paper) {
+          updatePaper(data.paper)
+          setGraphPapers((prev) => prev.map((p) => (p.id === paperId ? data.paper : p)))
+        }
+        await fetchPapers()
+      }
+    } catch {}
+  }
+
   const handleDownloadAll = async () => {
     setDownloading(true)
     const downloadPool = graphPapers.length > 0 ? graphPapers : visiblePapers
@@ -929,6 +943,7 @@ export default function PaperList() {
                     featured
                     compact
                     onDownload={handleDownload}
+                    onDeletePdf={handleDeletePdf}
                     onEdit={setEditingPaper}
                     onDelete={handleDelete}
                     selected={selectedPapers.has(paper.id)}
@@ -984,6 +999,7 @@ export default function PaperList() {
                       paper={paper}
                       compact
                       onDownload={handleDownload}
+                      onDeletePdf={handleDeletePdf}
                       onEdit={setEditingPaper}
                       onDelete={handleDelete}
                       selected={selectedPapers.has(paper.id)}
@@ -1015,6 +1031,7 @@ export default function PaperList() {
                   key={paper.id}
                   paper={paper}
                   onDownload={handleDownload}
+                  onDeletePdf={handleDeletePdf}
                   onEdit={setEditingPaper}
                   onDelete={handleDelete}
                   selected={selectedPapers.has(paper.id)}
