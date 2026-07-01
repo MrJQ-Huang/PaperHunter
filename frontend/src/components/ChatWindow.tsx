@@ -13,7 +13,7 @@ interface Props {
   onTaskUpdated?: (task: Task) => void
   taskStatus?: string
   searchPlan?: Task['search_plan']
-  inputRef?: React.RefObject<HTMLInputElement | null> | React.MutableRefObject<HTMLInputElement | null>
+  inputRef?: React.RefObject<HTMLTextAreaElement | null> | React.MutableRefObject<HTMLTextAreaElement | null>
 }
 
 export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskStatus, searchPlan, inputRef: extRef }: Props) {
@@ -23,13 +23,20 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
     confirmSearch, terminateTask, resetTask, resetPlan, isLoading,
   } = useChat(taskId, onTaskCreated, onTaskUpdated)
   const bottomRef = useRef<HTMLDivElement>(null)
-  const localRef = useRef<HTMLInputElement>(null)
+  const localRef = useRef<HTMLTextAreaElement>(null)
   const ref = extRef || localRef
   const agents = useAgentStore((s) => s.agents)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isLoading, agents])
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = '0px'
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+  }, [input, ref])
 
   // EmptyState 主题选择事件
   useEffect(() => {
@@ -230,16 +237,16 @@ export default function ChatWindow({ taskId, onTaskCreated, onTaskUpdated, taskS
 
       {/* 输入框 */}
       <div className="px-5 py-3 bg-white/80 backdrop-blur border-t border-gray-100 shrink-0">
-        <div className="flex items-center gap-2.5 bg-gray-50 rounded-2xl border border-gray-100 focus-within:ring-2 focus-within:ring-violet-200 focus-within:border-violet-200 transition-all px-4 py-1">
-          <input
-            ref={ref as React.Ref<HTMLInputElement>}
-            type="text"
+        <div className="flex items-end gap-2.5 bg-gray-50 rounded-2xl border border-gray-100 focus-within:ring-2 focus-within:ring-violet-200 focus-within:border-violet-200 transition-all px-4 py-2">
+          <textarea
+            ref={ref as React.Ref<HTMLTextAreaElement>}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
             disabled={isLoading}
             placeholder={isLoading ? "等待回复..." : taskId ? "继续聊聊~" : "输入研究主题..."}
-            className="flex-1 bg-transparent py-2 text-sm text-gray-700 focus:outline-none placeholder-gray-300 disabled:text-gray-300"
+            rows={1}
+            className="flex-1 resize-none overflow-y-auto bg-transparent py-1.5 text-sm leading-6 text-gray-700 focus:outline-none placeholder-gray-300 disabled:text-gray-300"
           />
           <button
             onClick={() => doSend(input)}

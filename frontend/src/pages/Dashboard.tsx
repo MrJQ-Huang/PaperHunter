@@ -11,7 +11,7 @@ import { Sparkles } from 'lucide-react'
 export default function Dashboard() {
   const pollingTasks = useRef(new Set<string>())
   const currentTaskRef = useRef<Task | null>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const resetAgents = useAgentStore((s) => s.resetAgents)
   const currentTask = usePaperStore((s) => s.currentTask)
