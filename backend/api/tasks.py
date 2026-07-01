@@ -741,10 +741,19 @@ async def remove_task(task_id: str):
     if crew:
         crew.terminate()
 
-    # 删除关联消息
-    from ..database import delete_task_messages
+    # 删除关联消息和论文
+    from pathlib import Path
+    from ..database import delete_all_papers, delete_task_messages, get_papers
+
+    papers, _ = await get_papers(task_id=task_id, per_page=10000)
+    for paper in papers:
+        if paper.local_pdf_path:
+            path = Path(paper.local_pdf_path)
+            if path.exists():
+                path.unlink()
+    await delete_all_papers(task_id)
     await delete_task_messages(task_id)
 
     # 删除任务
     await delete_task(task_id)
-    return {"message": "Task deleted", "task_id": task_id}
+    return {"message": "Task deleted", "task_id": task_id, "deleted_papers": len(papers)}

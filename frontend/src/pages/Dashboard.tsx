@@ -156,7 +156,13 @@ export default function Dashboard() {
       if (resp.ok) {
         const remaining = tasks.filter((t) => t.id !== taskId)
         setTasks(remaining)
-        if (currentTask?.id === taskId) setCurrentTask(remaining[0] || null)
+        if (currentTask?.id === taskId) {
+          const nextTask = remaining[0] || null
+          setCurrentTask(nextTask)
+          resetAgents()
+          if (nextTask) fetchPapers(nextTask.id)
+          else setPapers([], 0)
+        }
       }
     } catch {}
   }

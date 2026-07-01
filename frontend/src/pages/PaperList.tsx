@@ -128,6 +128,10 @@ export default function PaperList() {
     () => tasks.find((task) => task.id === selectedTaskId) || tasks[0] || null,
     [tasks, selectedTaskId]
   )
+  const selectedTask = useMemo(
+    () => tasks.find((task) => task.id === selectedTaskId) || null,
+    [tasks, selectedTaskId]
+  )
   const activeTaskId = selectedTaskId || activeTask?.id || ''
   const relevantGraphPapers = useMemo(
     () => graphPapers.filter((paper) => scoreOf(paper) >= scoreThreshold),
@@ -377,6 +381,7 @@ export default function PaperList() {
       const resp = await fetch(`/api/papers${taskParam}`, { method: 'DELETE' })
       if (resp.ok) {
         setPapers([], 0)
+        setGraphPapers([])
         setConfirmClear(false)
       }
     } catch {}
@@ -521,6 +526,18 @@ export default function PaperList() {
               <option key={task.id} value={task.id}>{task.query}</option>
             ))}
           </select>
+          {selectedTask && (
+            <button
+              onClick={handleClearAll}
+              className={`mt-3 w-full px-3 py-2 text-xs rounded-lg transition-colors ${
+                confirmClear
+                  ? 'bg-red-500 text-white'
+                  : 'bg-red-50 text-red-500 hover:bg-red-100'
+              }`}
+            >
+              {confirmClear ? '确认清空该任务论文' : '清空该任务论文'}
+            </button>
+          )}
         </div>
 
         {/* 来源筛选 */}
@@ -733,7 +750,9 @@ export default function PaperList() {
               }`}
             >
               <Trash2 size={14} />
-              {confirmClear ? '确认清空' : '清空'}
+              {confirmClear
+                ? (selectedTaskId ? '确认清空该任务' : '确认清空全部')
+                : (selectedTaskId ? '清空该任务' : '清空全部')}
             </button>
             {/* 刷新按钮 */}
             <button
